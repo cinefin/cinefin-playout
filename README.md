@@ -2,7 +2,7 @@
 
 The playout agent for a Cinefin cinema. It runs on the machine wired to your
 projector, plays programmes full-screen through mpv, and is driven over the
-network by [Cinefin](../cinefin). Linux and Windows.
+network by [Cinefin](https://github.com/cinefin/cinefin). Linux and Windows.
 
 ## Quick start
 
