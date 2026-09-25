@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
 // newHostTestServer builds a Server with a temp state_dir and config.toml path,

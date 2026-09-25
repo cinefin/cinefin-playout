@@ -16,7 +16,7 @@ Runs on Linux, Windows, and macOS, on a desktop machine or a headless booth box.
 
 ## Downloads
 
-Release archives are on the [Releases page](https://git.kef2.net/micky/cinefin-playout/releases).
+Release archives are on the [Releases page](https://github.com/cinefin/cinefin-playout/releases).
 Archive names follow this pattern:
 
 ```

@@ -44,7 +44,7 @@ FRAMEWORKS="${APP}/Contents/Frameworks"
 RESOURCES="${APP}/Contents/Resources"
 BIN="${MACOS}/cinefin-playout"
 MPVBIN="${MACOS}/mpv"
-LDFLAGS="-s -w -X git.kef2.net/micky/cinefin-playout/internal/version.Version=${VERSION}"
+LDFLAGS="-s -w -X github.com/cinefin/cinefin-playout/internal/version.Version=${VERSION}"
 
 MPV_SRC="${MPV_SRC:-$(command -v mpv || true)}"
 [ -n "${MPV_SRC}" ] || { echo "mpv not found — brew install mpv (or set MPV_SRC)" >&2; exit 1; }

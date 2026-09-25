@@ -1,4 +1,4 @@
-module git.kef2.net/micky/cinefin-playout
+module github.com/cinefin/cinefin-playout
 
 go 1.26
 

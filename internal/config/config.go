@@ -22,7 +22,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
 // EnvConfigPath is the environment variable that overrides the config search.

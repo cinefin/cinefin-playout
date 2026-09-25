@@ -6,7 +6,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
 // WriteLaunchConfig persists the launch config (autostart + graphics + audio)

@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"git.kef2.net/micky/cinefin-playout/internal/player"
+	"github.com/cinefin/cinefin-playout/internal/player"
 )
 
 // wantWait parses ?wait= (default true) — whether the call blocks until the

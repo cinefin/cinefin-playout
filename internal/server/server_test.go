@@ -15,9 +15,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
-	"git.kef2.net/micky/cinefin-playout/internal/player"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/player"
 )
 
 // newServerForTest builds a full Server backed by a running subprocess player

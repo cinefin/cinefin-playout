@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"git.kef2.net/micky/cinefin-playout/internal/mpvipc"
+	"github.com/cinefin/cinefin-playout/internal/mpvipc"
 )
 
 // sendQuit sends {"command":["quit"]} to mpv over its IPC endpoint. Best-effort;

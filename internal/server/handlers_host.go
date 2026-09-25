@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/hardware"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hardware"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
 // currentConfig re-reads config.toml so a config edit (a PUT, or a hand-edit on

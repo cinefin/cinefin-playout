@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"git.kef2.net/micky/cinefin-playout/internal/hardware"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/hardware"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
 // hasVTHandlers reports whether the current process environment could give a

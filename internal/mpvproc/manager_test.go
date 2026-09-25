@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
 func hasMPV(t *testing.T) {

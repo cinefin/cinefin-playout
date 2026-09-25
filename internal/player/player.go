@@ -17,8 +17,8 @@ package player
 import (
 	"context"
 
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
-	"git.kef2.net/micky/cinefin-playout/internal/mpvproc"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/mpvproc"
 )
 
 // Status is the player/process status reported to /status: pid, uptime,

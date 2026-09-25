@@ -5,9 +5,9 @@ import (
 	"log"
 	"sync/atomic"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/mpvipc"
-	"git.kef2.net/micky/cinefin-playout/internal/mpvproc"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/mpvipc"
+	"github.com/cinefin/cinefin-playout/internal/mpvproc"
 )
 
 // subprocess drives mpv as a supervised child process, talking to its local

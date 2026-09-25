@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"git.kef2.net/micky/cinefin-playout/internal/version"
+	"github.com/cinefin/cinefin-playout/internal/version"
 )
 
 // panelFS holds the embedded control-panel page served at /ui. It is a plain

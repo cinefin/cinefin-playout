@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
-	"git.kef2.net/micky/cinefin-playout/internal/mpvipc"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/mpvipc"
 )
 
 // Backoff and grace constants for mpv supervision.

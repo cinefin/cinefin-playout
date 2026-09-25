@@ -17,12 +17,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"git.kef2.net/micky/cinefin-playout/internal/config"
-	"git.kef2.net/micky/cinefin-playout/internal/hostconfig"
-	"git.kef2.net/micky/cinefin-playout/internal/player"
-	"git.kef2.net/micky/cinefin-playout/internal/server"
-	"git.kef2.net/micky/cinefin-playout/internal/ui"
-	"git.kef2.net/micky/cinefin-playout/internal/version"
+	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/player"
+	"github.com/cinefin/cinefin-playout/internal/server"
+	"github.com/cinefin/cinefin-playout/internal/ui"
+	"github.com/cinefin/cinefin-playout/internal/version"
 )
 
 func main() {
