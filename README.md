@@ -2,7 +2,7 @@
 
 The playout agent for a Cinefin cinema. It runs on the machine wired to your
 projector, plays programmes full-screen through mpv, and is driven over the
-network by [Cinefin](https://github.com/cinefin/cinefin). Linux and Windows.
+network by [Cinefin](../cinefin). Linux and Windows.
 
 ## Quick start
 
@@ -55,3 +55,11 @@ The bundled `mpv` is used by default. To use your own, do any of: download the
 `-nompv` archive, delete the bundled `mpv` file, or set `binary` under `[mpv]` in
 `config.toml`. The agent picks `[mpv].binary`, then the sibling `mpv`, then `mpv`
 on `PATH`, and logs the chosen path at startup.
+
+## License
+
+GNU General Public License, version 3 or later. Copyright (C) 2026 Cinefin. See
+[LICENSE](LICENSE).
+
+Release archives bundle `mpv`, which is also GPL and unmodified from upstream; its
+source is at <https://github.com/mpv-player/mpv>.
