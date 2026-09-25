@@ -1,0 +1,59 @@
+# Lint + test on every pull request (and pushes to main).
+#
+# Report-only: it exists so PRs show a red X when the build, vet, formatting or
+# tests fail. Release binaries are built separately by release.yml on v* tags.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          UNFORMATTED="$(gofmt -l .)"
+          if [ -n "${UNFORMATTED}" ]; then
+            echo "gofmt needed on:"; echo "${UNFORMATTED}"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Tests
+        run: go test ./...
+
+      - name: Vet + build the desktop shell (-tags ui)
+        # The tray build is pure-Go on linux (systray over D-Bus), so no native
+        # toolkit is needed — CGO stays off.
+        run: |
+          CGO_ENABLED=0 go vet -tags ui ./...
+          CGO_ENABLED=0 go build -tags ui ./...
+
+      - name: Cross-compile (all release targets, both variants)
+        # Pure Go, no cgo — a compile-time correctness gate for the os-tagged
+        # files (unix sockets vs named pipes). darwin's tray needs cgo, so the
+        # desktop cross-compile covers linux/windows only (matching release.yml).
+        run: |
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+            echo "--- service ${target}"
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build ./...
+          done
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            echo "--- desktop ${target}"
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -tags ui ./...
+          done

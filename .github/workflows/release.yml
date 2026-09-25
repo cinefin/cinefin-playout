@@ -1,0 +1,173 @@
+# Release binaries on every vX.Y.Z tag.
+#
+# Builds the agent for linux-amd64 and windows-amd64, stamps the version via
+# ldflags, packages each binary as .tar.gz (linux) / .zip (windows), writes
+# SHA-256 checksums, and creates the GitHub release with a changelog of the
+# commits since the previous tag, attaching everything.
+#
+# One binary per target, built with -tags ui (pure Go, CGO off on linux/windows).
+# It shows a system tray when run interactively and runs headless with --no-ui
+# (what the systemd unit / a Windows service passes). There is no separate
+# service vs desktop build.
+#
+# macOS is not cross-built here: its tray needs cgo (Cocoa), so the mac desktop
+# .app is built on a Mac via scripts/build-macos-app.sh and attached by hand.
+#
+# Each archive can ship an `mpv` alongside the agent so a host needs nothing
+# installed — the agent prefers a sibling `mpv` (see config.ResolveMPVBinary).
+# The mpv sources come from the committed mpv-bundle.json (a JSON object keyed by
+# "<goos>/<goarch>" whose values are URLs to an mpv archive or bare binary). Each
+# target also gets a slim "-nompv" archive (agent only) for hosts that bring their
+# own mpv via [mpv].binary or PATH.
+#
+# Assets are ARCHIVES on purpose: compression roughly halves the download and
+# keeps a single file per target.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags for the changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install packaging tools
+        # Both variants are pure-Go (CGO off), so there is no build toolchain to
+        # install — just the archivers used to unpack the bundled mpv downloads
+        # (.7z/.zip/.tar.xz/.tar.gz) and jq to read mpv-bundle.json.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zip unzip p7zip-full xz-utils jq
+
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X $(go list -m)/internal/version.Version=${VERSION}"
+          MPV_BUNDLE_URLS="$(cat mpv-bundle.json)"
+          mkdir -p dist build
+
+          # pack <name> <goos> <files...>: archive from build/ into dist/.
+          pack() {
+            local name="$1" goos="$2"; shift 2
+            if [ "${goos}" = windows ]; then
+              (cd build && zip -q "../dist/${name}.zip" "$@")
+            else
+              tar -czf "dist/${name}.tar.gz" -C build "$@"
+            fi
+          }
+
+          # bundle_mpv <goos> <goarch> <destdir>: drop an mpv into destdir from
+          # the URL configured for that target in mpv-bundle.json (if any). A
+          # recognised archive is extracted and the mpv binary found within;
+          # anything else (a bare binary or an AppImage) is taken verbatim.
+          bundle_mpv() {
+            local goos="$1" goarch="$2" dest="$3" key url tmp name found
+            [ -n "${MPV_BUNDLE_URLS:-}" ] || return 0
+            key="${goos}/${goarch}"
+            url="$(echo "${MPV_BUNDLE_URLS}" | jq -r --arg k "${key}" '.[$k] // empty')"
+            [ -n "${url}" ] || { echo "--- no mpv source for ${key} (ships without)"; return 0; }
+            echo "--- bundling mpv for ${key} from ${url}"
+            name="mpv"; [ "${goos}" = windows ] && name="mpv.exe"
+            tmp=/tmp/mpvdl; rm -rf "${tmp}"; mkdir -p "${tmp}/x"
+            curl -fsSL -o "${tmp}/pkg" "${url}"
+            case "${url}" in
+              *.7z)             7z x -y -o"${tmp}/x" "${tmp}/pkg" >/dev/null ;;
+              *.zip)            unzip -q "${tmp}/pkg" -d "${tmp}/x" ;;
+              *.tar.gz|*.tgz)   tar -xzf "${tmp}/pkg" -C "${tmp}/x" ;;
+              *.tar.xz)         tar -xJf "${tmp}/pkg" -C "${tmp}/x" ;;
+              *)                cp "${tmp}/pkg" "${tmp}/x/${name}" ;;  # bare binary or AppImage
+            esac
+            found="$(find "${tmp}/x" -type f -name "${name}" | head -n1)"
+            [ -n "${found}" ] || { echo "mpv not found in package for ${key}"; exit 1; }
+            install -m 0755 "${found}" "${dest}/${name}"
+          }
+
+          # build_variant <goos> <goarch>: cross-compile the agent (-tags ui, CGO
+          # off), then archive it twice — with the bundled mpv and as a slim
+          # -nompv (agent only). If no mpv is configured for the target, only the
+          # single agent-only archive is produced.
+          build_variant() {
+            local goos="$1" goarch="$2"
+            local ext=""; [ "${goos}" = windows ] && ext=".exe"
+            local ldflags="${LDFLAGS}"
+            # On Windows build a GUI app so double-clicking shows no console window;
+            # it still runs headless under --no-ui.
+            [ "${goos}" = windows ] && ldflags="${ldflags} -H windowsgui"
+            rm -rf build/*
+            local name="cinefin-playout-${VERSION}-${goos}-${goarch}"
+            echo "=== ${name}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
+              go build -trimpath -tags ui -ldflags "${ldflags}" -o "build/cinefin-playout${ext}" ./cmd/cinefin-playout
+            bundle_mpv "${goos}" "${goarch}" build
+            local mpvfile=""
+            [ -f "build/mpv" ]     && mpvfile="mpv"
+            [ -f "build/mpv.exe" ] && mpvfile="mpv.exe"
+            if [ -n "${mpvfile}" ]; then
+              pack "${name}"       "${goos}" "cinefin-playout${ext}" "${mpvfile}"
+              pack "${name}-nompv" "${goos}" "cinefin-playout${ext}"
+            else
+              pack "${name}" "${goos}" "cinefin-playout${ext}"
+            fi
+          }
+
+          for target in linux/amd64 windows/amd64; do
+            build_variant "${target%/*}" "${target#*/}"
+          done
+          ls -la dist/
+
+      - name: Checksums
+        run: (cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Build the changelog for this release
+        run: |
+          set -euo pipefail
+          REF="${GITHUB_REF_NAME}"
+          PREV="$(git tag --list 'v*' --sort=-version:refname \
+                    | awk -v cur="${REF}" 'found { print; exit } $0 == cur { found = 1 }')"
+          if [ -n "${PREV}" ]; then RANGE="${PREV}..${REF}"; else RANGE="${REF}"; fi
+          echo "Changelog range: ${PREV:-<start>}..${REF}"
+          NOTES="$(git log --no-merges --pretty='format:- %s (%h)' ${RANGE})"
+          [ -n "${NOTES}" ] || NOTES="- No code changes."
+          {
+            echo "## Changes"
+            echo
+            printf '%s\n' "${NOTES}"
+            echo
+            echo "## Binaries"
+            echo
+            echo "One archive per target: \`.tar.gz\` for linux-amd64, \`.zip\` for"
+            echo "windows-amd64. The agent shows a system tray when run interactively and"
+            echo "runs headless with \`--no-ui\` (the systemd unit / a Windows service)."
+            echo
+            echo "Each archive bundles \`mpv\`, so there is nothing else to install. Prefer"
+            echo "your own mpv? Take the matching \`-nompv\` archive; the agent then uses"
+            echo "\`[mpv].binary\` or an mpv on PATH."
+            echo
+            echo "macOS: build the desktop \`.app\` on a Mac with \`scripts/build-macos-app.sh\`"
+            echo "and attach it here."
+            echo
+            echo "Verify with \`sha256sum -c SHA256SUMS.txt\`."
+          } > "${RUNNER_TEMP}/body.txt"
+          echo "----- release notes -----"; cat "${RUNNER_TEMP}/body.txt"
+
+      - name: Create the GitHub release and attach the archives
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ runner.temp }}/body.txt
+          files: dist/*
+          fail_on_unmatched_files: true

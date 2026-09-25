@@ -1,0 +1,7 @@
+{
+  "_comment": "mpv binaries bundled next to the agent in release archives, keyed by <goos>/<goarch>. Read by the release workflow's bundle_mpv step (see .github/workflows/release.yml). Windows entries are shinchiro .7z builds (only mpv.exe is extracted). Linux entries are portable 'anylinux' AppImages (need FUSE, or the runtime's built-in extract-and-run fallback on a box without libfuse2 — verify on the target). A target with no entry ships without mpv and the agent falls back to [mpv].binary / PATH. macOS is intentionally omitted: the desktop .app bundles mpv via scripts/build-macos-app.sh, and the darwin service archive uses the system mpv (brew). To bump versions, replace the URLs with a newer release tag from each project; old release assets stay downloadable.",
+  "windows/amd64": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260925/mpv-x86_64-20260925-git-2a4eb8067c.7z",
+  "windows/arm64": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260925/mpv-aarch64-20260925-git-2a4eb8067c.7z",
+  "linux/amd64": "https://github.com/pkgforge-dev/mpv-AppImage/releases/download/v0.41.0%402026-09-07_1788787125/mpv-v0.41.0-anylinux-x86_64.AppImage",
+  "linux/arm64": "https://github.com/pkgforge-dev/mpv-AppImage/releases/download/v0.41.0%402026-09-07_1788787125/mpv-v0.41.0-anylinux-aarch64.AppImage"
+}

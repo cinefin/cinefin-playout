@@ -1,0 +1,6 @@
+# Built agent binaries (any cinefin…playout name, with or without .exe)
+/cinefin*playout
+/cinefin*playout.exe
+/build/
+/dist/
+*.exe

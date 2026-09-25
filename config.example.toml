@@ -1,0 +1,98 @@
+# cinefin-playout agent configuration
+#
+# The whole file is optional: with no config at all the agent runs on defaults
+# and auto-generates an API token on first run. Copy to
+# /etc/cinefin-playout/config.toml (or ~/.config/cinefin-playout/config.toml)
+# only to override something. Search order: --config flag,
+# $CINEFIN_PLAYOUT_CONFIG, ./config.toml,
+# ~/.config/cinefin-playout/config.toml, /etc/cinefin-playout/config.toml.
+#
+# Everything about mpv lives under one [mpv] table: how the agent reaches the
+# player, whether to autostart it, and the video/audio launch options in the
+# [mpv.graphics]/[mpv.audio] subtables. Edit them by hand, or let Cinefin edit
+# them remotely (PUT /hostconfig) — it rewrites just those subtables in place and
+# leaves the rest of this file untouched. config.toml stays the source of truth,
+# so the agent applies changes on the next player restart even if Cinefin is
+# offline.
+
+[server]
+host = "0.0.0.0"        # bind address for the agent API
+port = 8089
+# token: shared secret; set the same value on the Cinefin playout host record.
+# Leave it unset (or empty) to auto-generate one on first run — the agent prints
+# it to the log and writes it to <state_dir>/token. An empty token with no
+# generated file disables auth entirely (trusted LAN / loopback only).
+# token = ""
+
+[agent]
+# Where the token file and the mpv output log are kept:
+# state_dir = "~/.local/state/cinefin-playout"
+
+# ---------------------------------------------------------------------------
+# [mpv] — how the agent reaches and launches the player. The [mpv.graphics] and
+# [mpv.audio] subtables below hold the launch options; keep the direct [mpv]
+# keys above them (a TOML subtable header ends the parent table).
+# ---------------------------------------------------------------------------
+[mpv]
+# binary: the mpv executable. Leave it unset (default) and the agent prefers an
+# "mpv" sitting next to its own binary (the release archive includes one), then
+# falls back to PATH. Set it only to pin a specific mpv.
+# binary = "/usr/bin/mpv"
+ipc_socket = "/tmp/mpvsocket"   # mpv's LOCAL JSON-IPC endpoint. It never leaves
+                                # this host — Cinefin talks to the agent's
+                                # /ws/control relay, not to this socket.
+autostart = true                # launch mpv when the agent starts
+
+# Extra environment variables for the mpv process, e.g. PulseAudio:
+# [mpv.extra_env]
+# PULSE_SERVER = "unix:/run/user/1000/pulse/native"
+
+# ---------------------------------------------------------------------------
+# [mpv.graphics] — mpv video output. Any key you omit keeps the shipped per-OS
+# default. Two output modes:
+#
+#   desktop — render into an X/Wayland session (a window / a screen). Needs a
+#             running desktop session; set `display` and `screen`.
+#   drm     — headless: mpv drives the display directly via KMS/DRM with no X
+#             or Wayland (the cinema-booth setup). Set `drm_connector`; leave
+#             `display` empty. Linux only. See the DRM block below.
+# ---------------------------------------------------------------------------
+[mpv.graphics]
+mode = "desktop"          # "desktop" | "drm"
+vo = "gpu-next"           # video output driver (gpu-next, gpu, …)
+gpu_api = ""              # "" = mpv default; e.g. "d3d11" (Windows), "vulkan"
+gpu_context = ""          # "" = auto; e.g. "displayvk" (DRM+Vulkan), "drm"
+hwdec = "auto"            # hardware decode: auto | auto-safe | no | nvdec | vaapi | …
+screen = 0                # desktop mode: which display index to fullscreen on
+display = ":0"            # desktop mode: X display; leave "" for drm
+fullscreen = true
+hdr_passthrough = true    # send HDR to the display instead of tone-mapping to SDR
+osc = false               # mpv on-screen controller (seek bar on mouse-over)
+idle_media = ""           # ident/boot image shown paused before Cinefin connects
+
+# drm_connector / drm_mode apply only in mode = "drm".
+drm_connector = ""        # e.g. "HDMI-A-1" or "DP-1" (see GET /hardware)
+drm_mode = ""             # optional pinned mode, e.g. "1920x1080@60"
+
+# Headless projector booth (no desktop) — a Linux/DRM + Vulkan example:
+#   mode = "drm"
+#   gpu_api = "vulkan"
+#   gpu_context = "displayvk"
+#   drm_connector = "HDMI-A-1"
+#   drm_mode = "3840x2160@60"
+#   display = ""
+
+# ---------------------------------------------------------------------------
+# [mpv.audio] — mpv audio output.
+# ---------------------------------------------------------------------------
+[mpv.audio]
+device = ""               # "" = mpv default; e.g. "wasapi" (Windows) or an
+                          # ALSA/Pulse/Pipewire device id (see GET /hardware)
+channels = "auto"         # auto | stereo | 5.1 | 7.1
+max_volume = 130          # volume-max (percent)
+
+# Bitstream/passthrough: send these codecs to the AVR/soundbar untouched over
+# HDMI/SPDIF instead of decoding them. Empty = decode everything (PCM out).
+spdif_passthrough = []
+# A receiver that handles Dolby + DTS bitstreams:
+#   spdif_passthrough = ["ac3", "eac3", "dts", "dts-hd", "truehd"]
