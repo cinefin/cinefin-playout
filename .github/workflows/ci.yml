@@ -1,7 +1,11 @@
 # Lint + test on every pull request (and pushes to main).
 #
 # Report-only: it exists so PRs show a red X when the build, vet, formatting or
-# tests fail. Release binaries are built separately by release.yml on v* tags.
+# tests fail. Release binaries are built separately by release.yml.
+#
+# The job installs Go, then hands off to the Makefile: `make check` runs the
+# SAME gofmt/vet/test/cross-compile steps you run locally, so CI and local can't
+# drift — the detail lives in the Makefile, not this file.
 name: CI
 
 on:
@@ -21,39 +25,5 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: gofmt
-        run: |
-          UNFORMATTED="$(gofmt -l .)"
-          if [ -n "${UNFORMATTED}" ]; then
-            echo "gofmt needed on:"; echo "${UNFORMATTED}"; exit 1
-          fi
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: Build
-        run: go build ./...
-
-      - name: Tests
-        run: go test ./...
-
-      - name: Vet + build the desktop shell (-tags ui)
-        # The tray build is pure-Go on linux (systray over D-Bus), so no native
-        # toolkit is needed — CGO stays off.
-        run: |
-          CGO_ENABLED=0 go vet -tags ui ./...
-          CGO_ENABLED=0 go build -tags ui ./...
-
-      - name: Cross-compile (all release targets, both variants)
-        # Pure Go, no cgo — a compile-time correctness gate for the os-tagged
-        # files (unix sockets vs named pipes). darwin's tray needs cgo, so the
-        # desktop cross-compile covers linux/windows only (matching release.yml).
-        run: |
-          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
-            echo "--- service ${target}"
-            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build ./...
-          done
-          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
-            echo "--- desktop ${target}"
-            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -tags ui ./...
-          done
+      - name: Lint + test + cross-compile
+        run: make check

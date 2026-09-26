@@ -1,32 +1,35 @@
-# Release binaries on every vX.Y.Z tag.
+# Build and publish the agent binaries.
 #
-# Builds the agent for linux-amd64 and windows-amd64, stamps the version via
-# ldflags, packages each binary as .tar.gz (linux) / .zip (windows), writes
-# SHA-256 checksums, and creates the GitHub release with a changelog of the
-# commits since the previous tag, attaching everything.
+#   push to main    -> rolling "edge" PRE-RELEASE: linux-amd64 + windows-amd64
+#   push tag vX.Y.Z -> STABLE release: linux-amd64 only (mac built on a Mac by hand)
+#   manual run      -> builds, publishes nothing
 #
-# One binary per target, built with -tags ui (pure Go, CGO off on linux/windows).
-# It shows a system tray when run interactively and runs headless with --no-ui
-# (what the systemd unit / a Windows service passes). There is no separate
-# service vs desktop build.
+# Windows is EDGE-ONLY on purpose: the windows-amd64 archive ships on the rolling
+# edge pre-release for testing, never on a tagged stable release yet.
 #
-# macOS is not cross-built here: its tray needs cgo (Cocoa), so the mac desktop
-# .app is built on a Mac via scripts/build-macos-app.sh and attached by hand.
+# The version is the git tag, stamped via ldflags (`go list -m` resolves the
+# module path) — no file is hand-edited. Each binary is built with -tags ui (pure
+# Go, CGO off): a system tray when interactive, headless under --no-ui.
 #
-# Each archive can ship an `mpv` alongside the agent so a host needs nothing
-# installed — the agent prefers a sibling `mpv` (see config.ResolveMPVBinary).
-# The mpv sources come from the committed mpv-bundle.json (a JSON object keyed by
-# "<goos>/<goarch>" whose values are URLs to an mpv archive or bare binary). Each
-# target also gets a slim "-nompv" archive (agent only) for hosts that bring their
-# own mpv via [mpv].binary or PATH.
+# Each archive can ship an `mpv` alongside the agent (sources in mpv-bundle.json,
+# keyed by "<goos>/<goarch>"); a slim "-nompv" archive is also produced for hosts
+# that bring their own mpv. Assets are ARCHIVES (.tar.gz / .zip) on purpose:
+# compression halves the download and keeps one file per target.
 #
-# Assets are ARCHIVES on purpose: compression roughly halves the download and
-# keeps a single file per target.
+# macOS is not cross-built (its tray needs cgo/Cocoa): build the .app on a Mac
+# with scripts/build-macos-app.sh and attach it to the release by hand.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".gitignore"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -46,17 +49,38 @@ jobs:
           go-version-file: go.mod
 
       - name: Install packaging tools
-        # Both variants are pure-Go (CGO off), so there is no build toolchain to
-        # install — just the archivers used to unpack the bundled mpv downloads
-        # (.7z/.zip/.tar.xz/.tar.gz) and jq to read mpv-bundle.json.
+        # Pure-Go (CGO off), so there is no build toolchain to install — just the
+        # archivers used to unpack the bundled mpv downloads and jq for the bundle.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq zip unzip p7zip-full xz-utils jq
 
+      - name: Work out version, channel and targets
+        id: meta
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # Stable release: linux only. Windows is edge-only; mac built by hand.
+            version="${GITHUB_REF_NAME}"; channel="release"
+            targets="linux/amd64"
+          else
+            # Edge: rolling build of main — carries the Windows archive too.
+            version="$(git describe --tags --always --dirty 2>/dev/null || echo edge)"
+            channel="edge"
+            targets="linux/amd64 windows/amd64"
+          fi
+          {
+            echo "version=${version}"
+            echo "channel=${channel}"
+            echo "targets=${targets}"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=${version} channel=${channel} targets=${targets}"
+
       - name: Build and package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TARGETS: ${{ steps.meta.outputs.targets }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME}"
           LDFLAGS="-s -w -X $(go list -m)/internal/version.Version=${VERSION}"
           MPV_BUNDLE_URLS="$(cat mpv-bundle.json)"
           mkdir -p dist build
@@ -71,10 +95,8 @@ jobs:
             fi
           }
 
-          # bundle_mpv <goos> <goarch> <destdir>: drop an mpv into destdir from
-          # the URL configured for that target in mpv-bundle.json (if any). A
-          # recognised archive is extracted and the mpv binary found within;
-          # anything else (a bare binary or an AppImage) is taken verbatim.
+          # bundle_mpv <goos> <goarch> <destdir>: drop an mpv into destdir from the
+          # URL configured for that target in mpv-bundle.json (if any).
           bundle_mpv() {
             local goos="$1" goarch="$2" dest="$3" key url tmp name found
             [ -n "${MPV_BUNDLE_URLS:-}" ] || return 0
@@ -98,9 +120,7 @@ jobs:
           }
 
           # build_variant <goos> <goarch>: cross-compile the agent (-tags ui, CGO
-          # off), then archive it twice — with the bundled mpv and as a slim
-          # -nompv (agent only). If no mpv is configured for the target, only the
-          # single agent-only archive is produced.
+          # off), then archive it with the bundled mpv and as a slim -nompv.
           build_variant() {
             local goos="$1" goarch="$2"
             local ext=""; [ "${goos}" = windows ] && ext=".exe"
@@ -125,7 +145,7 @@ jobs:
             fi
           }
 
-          for target in linux/amd64 windows/amd64; do
+          for target in ${TARGETS}; do
             build_variant "${target%/*}" "${target#*/}"
           done
           ls -la dist/
@@ -133,41 +153,65 @@ jobs:
       - name: Checksums
         run: (cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
-      - name: Build the changelog for this release
+      - name: Build the release notes
+        env:
+          CHANNEL: ${{ steps.meta.outputs.channel }}
         run: |
           set -euo pipefail
-          REF="${GITHUB_REF_NAME}"
-          PREV="$(git tag --list 'v*' --sort=-version:refname \
-                    | awk -v cur="${REF}" 'found { print; exit } $0 == cur { found = 1 }')"
-          if [ -n "${PREV}" ]; then RANGE="${PREV}..${REF}"; else RANGE="${REF}"; fi
-          echo "Changelog range: ${PREV:-<start>}..${REF}"
-          NOTES="$(git log --no-merges --pretty='format:- %s (%h)' ${RANGE})"
-          [ -n "${NOTES}" ] || NOTES="- No code changes."
-          {
-            echo "## Changes"
-            echo
-            printf '%s\n' "${NOTES}"
-            echo
-            echo "## Binaries"
-            echo
-            echo "One archive per target: \`.tar.gz\` for linux-amd64, \`.zip\` for"
-            echo "windows-amd64. The agent shows a system tray when run interactively and"
-            echo "runs headless with \`--no-ui\` (the systemd unit / a Windows service)."
-            echo
-            echo "Each archive bundles \`mpv\`, so there is nothing else to install. Prefer"
-            echo "your own mpv? Take the matching \`-nompv\` archive; the agent then uses"
-            echo "\`[mpv].binary\` or an mpv on PATH."
-            echo
-            echo "macOS: build the desktop \`.app\` on a Mac with \`scripts/build-macos-app.sh\`"
-            echo "and attach it here."
-            echo
-            echo "Verify with \`sha256sum -c SHA256SUMS.txt\`."
-          } > "${RUNNER_TEMP}/body.txt"
-          echo "----- release notes -----"; cat "${RUNNER_TEMP}/body.txt"
+          BODY="${RUNNER_TEMP}/body.txt"
+          if [ "${CHANNEL}" = "release" ]; then
+            {
+              echo "## Changes"
+              echo
+              # scripts/changelog.sh is the SHARED source of truth for the notes —
+              # byte-identical to cinefin and to the Gitea release workflow.
+              scripts/changelog.sh "${GITHUB_REF_NAME}"
+              echo
+              echo "## Binaries"
+              echo
+              echo "\`.tar.gz\` for linux-amd64. The agent shows a system tray when run"
+              echo "interactively and runs headless with \`--no-ui\` (the systemd unit / a"
+              echo "Windows service)."
+              echo
+              echo "Each archive bundles \`mpv\`, so there is nothing else to install. Prefer"
+              echo "your own mpv? Take the matching \`-nompv\` archive; the agent then uses"
+              echo "\`[mpv].binary\` or an mpv on PATH."
+              echo
+              echo "macOS: build the desktop \`.app\` on a Mac with \`scripts/build-macos-app.sh\`"
+              echo "and attach it here. Windows ships on the \`edge\` pre-release for now."
+              echo
+              echo "Verify with \`sha256sum -c SHA256SUMS.txt\`."
+            } > "${BODY}"
+          else
+            {
+              echo "Rolling build of the latest \`main\` (\`${GITHUB_SHA::8}\`) — unstable."
+              echo
+              echo "Includes linux-amd64 and windows-amd64 archives (each with and without a"
+              echo "bundled \`mpv\`). Verify with \`sha256sum -c SHA256SUMS.txt\`."
+            } > "${BODY}"
+          fi
+          echo "----- release notes -----"; cat "${BODY}"
 
-      - name: Create the GitHub release and attach the archives
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: ${{ runner.temp }}/body.txt
-          files: dist/*
-          fail_on_unmatched_files: true
+      - name: Publish (stable release on a tag / rolling edge on main)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: |
+          set -euo pipefail
+          if [ "${CHANNEL}" = "release" ]; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes-file "${RUNNER_TEMP}/body.txt" \
+              dist/*
+          else
+            gh release delete edge --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+            gh release create edge \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease --latest=false \
+              --target "$GITHUB_SHA" \
+              --title "Latest dev build (edge)" \
+              --notes-file "${RUNNER_TEMP}/body.txt" \
+              dist/*
+          fi
