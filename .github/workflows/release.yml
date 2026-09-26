@@ -183,11 +183,17 @@ jobs:
               echo "Verify with \`sha256sum -c SHA256SUMS.txt\`."
             } > "${BODY}"
           else
+            base="$(git tag --list 'v*' --sort=-version:refname | head -n1)"
             {
               echo "Rolling build of the latest \`main\` (\`${GITHUB_SHA::8}\`) — unstable."
               echo
               echo "Includes linux-amd64 and windows-amd64 archives (each with and without a"
               echo "bundled \`mpv\`). Verify with \`sha256sum -c SHA256SUMS.txt\`."
+              echo
+              echo "## Pending changes${base:+ since ${base}}"
+              echo
+              # changelog.sh with a ref (not a tag) lists commits since the latest tag.
+              scripts/changelog.sh HEAD 20
             } > "${BODY}"
           fi
           echo "----- release notes -----"; cat "${BODY}"
