@@ -81,6 +81,10 @@ func (s *subprocess) Probe(ctx context.Context) (string, bool) {
 }
 
 func (s *subprocess) Close() error {
+	// Stop mpv before tearing down: it is spawned in its own session (unix) or
+	// outlives its parent (Windows), so it does not die with the agent. Only
+	// covers signals we can act on (SIGTERM/SIGINT); a SIGKILL runs no Go code.
+	s.mgr.Stop()
 	s.mgr.Shutdown()
 	return s.mpv.Close()
 }

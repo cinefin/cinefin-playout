@@ -173,6 +173,11 @@ func (s *Server) serveControl(parent context.Context, conn *websocket.Conn) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	// Lift the library's 32 KiB read limit: mpv command frames (an inline
+	// playlist, long streaming URLs) can exceed it, and hitting it closes the
+	// connection — surfacing as "fails to load". The client is single and authed.
+	conn.SetReadLimit(-1)
+
 	// Outbound frames are serialised through this channel so the control bridge
 	// (which may call send from mpv's read goroutine) never touches the
 	// websocket concurrently with the read loop.
