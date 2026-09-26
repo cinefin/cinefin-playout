@@ -1,232 +1,156 @@
 # cinefin-playout
 
-The playout agent that runs on the machine connected to your projector or screen.
-It runs mpv, plays programmes full-screen (trailers, bumpers, idents, the
-feature), and is controlled over the network by [Cinefin](../cinefin). Cinefin
-speaks mpv's JSON-IPC over a single authenticated WebSocket; the mpv socket itself
-never leaves the host.
+This is the playout agent for [Cinefin](../cinefin). Install it on the machine
+wired to your projector or screen. It runs mpv, plays your programmes full screen
+(trailers, bumpers, idents, and the feature), and takes its orders from Cinefin
+over the network.
 
-Runs on Linux, Windows, and macOS, on a desktop machine or a headless booth box.
+Cinefin talks to mpv through one authenticated WebSocket, so the mpv socket never
+leaves the host. The agent runs on Linux, Windows, and macOS, on a desktop you sit
+at or a headless booth box.
 
-## Requirements
+## Quick start
 
-- mpv. Most release archives bundle it (see [Downloads](#downloads)). You can also
-  provide your own; see [Choosing an mpv](#choosing-an-mpv).
-- Network access to the Cinefin server.
+1. **Download** the archive for your machine from the
+   [Releases page](https://github.com/cinefin/cinefin-playout/releases). Most
+   archives include mpv, so there is nothing else to install. Pick `linux-amd64`
+   (`.tar.gz`). Windows builds currently ship on the pre-release marked `edge`
+   while they settle. On macOS, build the app yourself (see
+   [Build from source](#build-from-source)).
 
-## Downloads
+2. **Unzip it** anywhere, and keep the `mpv` file next to `cinefin-playout`.
 
-Release archives are on the [Releases page](https://github.com/cinefin/cinefin-playout/releases).
-Archive names follow this pattern:
+3. **Run it.**
+   - Windows: double-click `cinefin-playout.exe`.
+   - Linux: run `./cinefin-playout`.
+   - macOS: open `Cinefin Playout.app`. It is unsigned, so the first time,
+     right-click it and choose Open.
 
-```
-cinefin-playout-<version>-<os>-<arch>[-nompv].<ext>
-```
+   A tray icon appears, and on first run the agent creates its access token.
 
-- `<os>-<arch>`: `linux-amd64` (`.tar.gz`) and `windows-amd64` (`.zip`).
-- `-nompv`: the agent binary only, with no bundled mpv (see
-  [Choosing an mpv](#choosing-an-mpv)). The plain archive bundles mpv.
+4. **Connect it to Cinefin.** From the tray menu, choose "Open control panel".
+   The page shows the host address and token with copy buttons. In Cinefin, go to
+   Settings > Playout > Add host and paste them in.
 
-There is one agent binary. It shows a system tray when you run it interactively,
-and runs headless when started with `--no-ui` (see [Run headless](#run-headless-service)).
-So one download covers both a machine someone sits at and a booth box.
+That is the whole setup. Cinefin now plays through this machine, and you set its
+screen and audio from the same page.
 
-macOS is not in the release archives. Build the desktop app on a Mac with
-`scripts/build-macos-app.sh`; it produces a self-contained `Cinefin Playout.app`
-with mpv bundled.
+## Run as a service (booth box)
 
-### mpv bundling by OS
+For a box that should start on boot with no one logged in, run the same binary
+with `--no-ui` under a service manager.
 
-| OS | mpv bundled? |
-| --- | --- |
-| Linux (amd64) | Yes, a portable build, in the plain archive. |
-| Windows (amd64) | Yes, in the plain archive. |
-| macOS | The `.app` (built on a Mac) bundles mpv. |
-
-The `-nompv` archives never contain mpv.
-
-## Choosing an mpv
-
-The agent resolves which mpv to run in this order:
-
-1. An explicit `binary` path in `config.toml` under `[mpv]`.
-2. An `mpv` (or `mpv.exe`) sitting next to the agent binary. This is the bundled
-   one in a standard archive.
-3. `mpv` found on `PATH`.
-
-It logs the resolved path at startup, for example `mpv: /usr/bin/mpv`, so you can
-confirm which one is in use.
-
-To use your own mpv instead of a bundled one, do any of:
-
-- Download the matching `-nompv` archive, so no bundled mpv is present and the
-  agent uses `PATH` (or your configured `[mpv].binary`).
-- Delete the `mpv` file next to the agent in a standard archive.
-- Set `binary` under `[mpv]` in `config.toml` to a specific path.
-
-## Install and run
-
-Unzip the archive anywhere. Keep the `mpv` file next to `cinefin-playout` unless
-you are bringing your own.
-
-### Run with a tray
-
-Run the agent directly and it shows a system-tray icon:
-
-- Windows: run `cinefin-playout.exe`. A tray icon appears.
-- Linux: run `./cinefin-playout`. The tray appears on any D-Bus desktop. The build
-  is pure Go, so there is no GTK or WebKit to install.
-- macOS: open `Cinefin Playout.app`. It is unsigned, so on first run use
-  right-click then Open, or run `xattr -d com.apple.quarantine "Cinefin Playout.app"`.
-  The icon appears in the menu bar.
-
-On first run the agent generates an access token. Use the tray menu:
-
-- Open control panel: opens the status page (`/ui`) in your browser. It shows the
-  host address and token with copy buttons.
-- Copy address / Copy token: copies each value to the clipboard.
-
-### Run headless (service)
-
-Start the same binary with `--no-ui` to skip the tray, and run it under a service
-manager. systemd example:
+systemd:
 
 ```bash
-sudo cp cinefin-playout mpv /usr/local/bin/     # copy the bundled mpv too, or rely on a system mpv
+sudo cp cinefin-playout mpv /usr/local/bin/     # include mpv, or rely on a system one
 sudo cp etc/cinefin-playout.service.example /etc/systemd/system/cinefin-playout.service
 sudoedit /etc/systemd/system/cinefin-playout.service   # set your username
 sudo systemctl daemon-reload
 sudo systemctl enable --now cinefin-playout.service
 ```
 
-The agent owns mpv itself, so disable any standalone `cinefin-mpv.service`. On
-Windows, register the agent with `sc.exe create` or Task Scheduler.
+The agent runs mpv itself, so disable any separate `cinefin-mpv.service`. On
+Windows, register it with `sc.exe create` or Task Scheduler.
 
-A config file is optional. With no config the agent runs on defaults and
-generates a token on first run (printed to the log and saved to
-`<state_dir>/token`). Add a `config.toml` (see `config.example.toml`) to pin the
-bind address, the mpv binary, or a fixed token. Graphics and audio are normally
-set from Cinefin.
+On first run the token is printed to the log and saved to `<state_dir>/token`. A
+`config.toml` is optional (see `config.example.toml`); use it to pin the bind
+address, the mpv binary, or a fixed token.
 
-## Pair with Cinefin
+## Screen and audio
 
-In Cinefin, go to Settings > Playout > Add host and paste the host address and
-token. Cinefin then plays through this machine, and you set its graphics and audio
-from the same page.
+The screen, resolution, video output, HDR, audio device, and channels live on the
+host in `config.toml`, under `[mpv.graphics]` and `[mpv.audio]`. You normally set
+these from Cinefin's Playout page, which lists the real devices on the box and
+writes your choices back to the file. Because the file is the source of truth on
+the host, the box still boots, starts mpv, and shows the idle ident even when
+Cinefin is offline.
 
-## How it works
+You can hand-edit `config.toml` as a fallback. See `config.example.toml` for the
+options, including headless DRM and audio passthrough. Changes take effect on the
+next player restart.
 
-The agent owns mpv on the host. Cinefin sends mpv's own JSON-IPC commands over one
-WebSocket and receives mpv's replies and events back.
+### Running without a desktop (DRM/KMS)
 
-```
-+------------ cinefin (Django) ------------+        +--------- playout host: agent ---------+
-| mpv_service  ->  MPVController           |        |  HTTP + WS server :8089 (bearer token)|
-|                +- WSMPV transport --------+- WS ->|   /ws/control   duplex JSON-IPC       |
-|                                          |        |   /hostconfig /hardware /mpv/*        |
-| PlayoutHost row (url + token)            |        |      | spawns / supervises           |
-| Settings: subtitles (applied live)       |        |      v                                |
-+------------------------------------------+        |  mpv (subprocess)                     |
-                                                    +---------------------------------------+
-```
+mpv can draw straight to the screen through the kernel, with no Xorg or Wayland. In
+the graphics config set `mode: "drm"` and one of:
 
-- Control: commands carry `request_id`s; replies and events (`property-change`,
-  `end-file`, and so on) come back as mpv emits them.
-- Supervision: if mpv crashes, the agent relaunches it with backoff. An explicit
-  stop keeps it stopped until the next start.
-- Host graphics and audio: the launch config lives on the host in `config.toml`.
-  Cinefin reads and writes it over the API.
-- DRM hotplug recovery (Linux DRM mode): a projector power-cycle re-modesets
-  without a restart.
+- `gpu_api: "vulkan"` with `gpu_context: "displayvk"`: best on NVIDIA.
+- `gpu_context: "drm"`: the GBM/EGL route for Intel and AMD, or NVIDIA with recent
+  drivers.
 
-Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Graphics and audio
-
-The mpv launch config (screen, resolution, video output, HDR, audio device,
-channels) lives on the host in the `[mpv.graphics]` and `[mpv.audio]` sections of
-`config.toml`. You do not normally edit it by hand. The Cinefin Playout page reads
-the agent's `/hostconfig`, shows dropdowns of the real devices from `/hardware`,
-and writes changes back per host. The agent validates them and saves them to
-`config.toml`. Because the file is the source of truth on the host, the box still
-boots, autostarts mpv, and shows the idle ident when Cinefin is offline.
-
-Hand-editing `config.toml` is available as an offline fallback (see
-`config.example.toml`, including headless/DRM and audio passthrough). Changes apply
-on the next player restart.
-
-## Headless DRM/KMS (no display server)
-
-mpv can render straight to the screen through the kernel's DRM interface, with no
-Xorg or Wayland. In the graphics config set `mode: "drm"` and one of:
-
-- `gpu_api: "vulkan"`, `gpu_context: "displayvk"`: Vulkan direct-to-display, the
-  best path on NVIDIA.
-- `gpu_context: "drm"`: the GBM/EGL route (Intel/AMD, or NVIDIA with GBM in
-  drivers 545 and later).
-
-Set `drm_connector` (for example `HDMI-A-1`) if the host has several outputs.
-NVIDIA needs DRM KMS enabled in the kernel modules:
+Set `drm_connector` (for example `HDMI-A-1`) if the box has more than one output.
+On NVIDIA, enable DRM KMS:
 
 ```
 # /etc/modprobe.d/nvidia-drm.conf
 options nvidia-drm modeset=1 fbdev=1
 ```
 
-Regenerate the initramfs and reboot, then check that
+Rebuild the initramfs and reboot, then confirm that
 `cat /sys/module/nvidia_drm/parameters/modeset` prints `Y`. Give the agent's user
-DRM access (`SupplementaryGroups=video render`) and make sure no display manager
-holds DRM master on that GPU. For audio without a desktop, run a user PipeWire or
-PulseAudio session, or point the audio device at an ALSA sink such as
+DRM access (`SupplementaryGroups=video render`) and make sure no display manager is
+holding the GPU. For audio with no desktop, run a user PipeWire or PulseAudio
+session, or point the audio device at an ALSA sink such as
 `alsa/hdmi:CARD=NVidia,DEV=0` (from `GET /hardware`).
+
+## Bringing your own mpv
+
+Every standard archive includes a working mpv, so most people can skip this. If you
+would rather use your own, the agent looks for mpv in this order:
+
+1. The `binary` path under `[mpv]` in `config.toml`.
+2. An `mpv` (or `mpv.exe`) next to the agent binary. This is the bundled one.
+3. `mpv` on your `PATH`.
+
+It logs the one it picked at startup (for example `mpv: /usr/bin/mpv`). To use your
+own, download the `-nompv` archive, delete the bundled `mpv` file, or set
+`[mpv].binary`.
+
+## How it works
+
+The agent owns mpv on the host. Cinefin sends mpv's own JSON-IPC commands over one
+WebSocket and gets mpv's replies and events back. If mpv crashes, the agent
+relaunches it with backoff; an explicit stop keeps it stopped. On Linux DRM, a
+projector power-cycle re-modesets without a restart.
+
+For the full design, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## API
 
-All endpoints except `/health` and the loopback-only `/ui` require an
-`Authorization: Bearer <token>` header. Traffic is plaintext HTTP, intended for a
-trusted LAN. Do not expose it to the internet; put a reverse proxy or tunnel in
-front if you need TLS.
+Everything except `/health` and the loopback-only `/ui` needs an
+`Authorization: Bearer <token>` header. Traffic is plain HTTP for a trusted LAN. Do
+not expose it to the internet; put a reverse proxy in front if you need TLS.
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
 | GET  | `/health` | Liveness, version, os/arch (no auth). |
 | GET  | `/status` | Agent, mpv, and control-link status. |
-| WS   | `/ws/control` | Duplex mpv JSON-IPC (commands, replies, events). |
-| GET  | `/hostconfig` | Current graphics, audio, and autostart launch config. |
-| PUT  | `/hostconfig` | Replace the launch config (validated, persisted). Returns `{restart_required}`. |
-| PUT  | `/hostconfig/idle-media` | Set only the idle-screen media (the Cinefin cinema ident). |
-| GET  | `/hardware` | Enumerated audio devices, DRM connectors, screens, and mpv features. |
+| WS   | `/ws/control` | Duplex mpv JSON-IPC. |
+| GET  | `/hostconfig` | Current graphics, audio, and autostart config. |
+| PUT  | `/hostconfig` | Replace the launch config. Returns `{restart_required}`. |
+| PUT  | `/hostconfig/idle-media` | Set just the idle-screen media (the cinema ident). |
+| GET  | `/hardware` | Audio devices, DRM connectors, screens, and mpv features. |
 | POST | `/mpv/start`, `/mpv/stop`, `/mpv/restart` | Player lifecycle. |
-| GET  | `/ui` | Control-panel page (loopback only; opened in the browser by the desktop build's tray). |
+| GET  | `/ui` | Control panel (loopback only). |
 
 ## Build from source
 
-```bash
-go build ./...          # service build (subprocess mpv, no UI), pure Go
-go vet ./... && gofmt -l . && go test ./...
-```
-
-Build the desktop flavour (adds the system tray) with `-tags ui`. It is still pure
-Go, so it cross-compiles with CGO off, the same as the service build:
+You need Go (see `go.mod` for the version). The common tasks are in the Makefile:
 
 ```bash
-# Linux and Windows: systray runs over D-Bus/GDI, no native toolkit needed
-go build -tags ui ./cmd/cinefin-playout
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags ui ./cmd/cinefin-playout
-
-# macOS: its tray needs cgo (Cocoa); also needs the Xcode command line tools
-./scripts/build-macos-app.sh   # builds the self-contained "Cinefin Playout.app" into dist/
+make build     # build the agent for this machine
+make check     # gofmt, vet, tests, and a cross-compile of every target
 ```
 
-The `ui` build tag adds the system tray. It needs cgo only on macOS (Cocoa); on
-Linux it uses D-Bus and on Windows it uses GDI, both without cgo. Without the tag
-you get the same binary, headless. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+`make build` includes the system tray. It is pure Go on Linux (D-Bus) and Windows
+(GDI), so it cross-compiles with CGO off. The tray needs cgo only on macOS (Cocoa):
 
-CI builds and attaches all variants to a release on each `v*` tag, except the
-macOS `-desktop` `.app`, which must be built on a Mac with
-`scripts/build-macos-app.sh` and attached by hand. Which targets bundle mpv is set
-by `mpv-bundle.json` at the repo root: a JSON map of `"<os>/<arch>"` to a download
-URL. On Linux the URL should point at a portable AppImage or static build. Targets
-with no entry ship without mpv. Every target that bundles mpv also gets a `-nompv`
-archive.
+```bash
+./scripts/build-macos-app.sh   # builds a self-contained "Cinefin Playout.app" into dist/
+```
+
+Releases are built by CI. Which targets ship a bundled mpv is set by
+`mpv-bundle.json`, a map of `"<os>/<arch>"` to a download URL; targets with no entry
+ship without mpv, and every bundled target also gets a `-nompv` archive. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for more.
