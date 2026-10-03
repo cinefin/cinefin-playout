@@ -21,7 +21,6 @@ func TestMPVLifecycleEndpoints(t *testing.T) {
 	socket := shortSocketPath(t, "scratch.sock")
 	cfg := config.Default()
 	cfg.IPCSocket = socket
-	cfg.Token = "secret"
 	cfg.StateDir = t.TempDir()
 
 	// A headless-safe launch config so the manager's spawn is side-effect-free.
@@ -35,7 +34,7 @@ func TestMPVLifecycleEndpoints(t *testing.T) {
 	hc.Audio.Device = "null"
 	hc.Audio.Channels = ""
 
-	ts := newServerForTest(t, cfg, func() hostconfig.HostConfig { return hc })
+	ts, _ := newServerForTest(t, cfg, "secret", func() hostconfig.HostConfig { return hc })
 
 	// Start (wait for socket).
 	resp := do(t, "POST", ts.URL+"/mpv/start?wait=true", nil)

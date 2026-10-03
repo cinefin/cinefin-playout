@@ -17,15 +17,25 @@ import (
 
 	"github.com/cinefin/cinefin-playout/internal/config"
 	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/pairing"
 	"github.com/cinefin/cinefin-playout/internal/player"
+	"github.com/cinefin/cinefin-playout/internal/state"
 )
 
 // newServerForTest builds a full Server backed by a running subprocess player
-// pointed at cfg.IPCSocket. hcOf may be nil (a headless, non-autostarting linux
+// pointed at cfg.IPCSocket, with a state store in cfg.StateDir holding token.
+// hcOf may be nil (a headless, non-autostarting linux
 // preset is used). The backend's monitor runs but never spawns mpv unless a test
 // calls /mpv/start, so it is safe against a bad or fake socket.
-func newServerForTest(t *testing.T, cfg config.Config, hcOf player.HostConfigProvider) *httptest.Server {
+func newServerForTest(t *testing.T, cfg config.Config, token string, hcOf player.HostConfigProvider) (*httptest.Server, *state.Store) {
 	t.Helper()
+	st, err := state.Open(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetToken(token); err != nil {
+		t.Fatal(err)
+	}
 	if hcOf == nil {
 		hcOf = func() hostconfig.HostConfig {
 			hc := hostconfig.Preset("linux")
@@ -34,13 +44,13 @@ func newServerForTest(t *testing.T, cfg config.Config, hcOf player.HostConfigPro
 		}
 	}
 	backend := player.New(cfg, hcOf, log.New(io.Discard, "", 0))
-	srv := New(cfg, backend, log.New(io.Discard, "", 0))
+	srv := New(cfg, Identity{ID: "test-id", Name: "Test player"}, st, pairing.New(), backend, log.New(io.Discard, "", 0))
 	ctx, cancel := context.WithCancel(context.Background())
 	backend.Run(ctx)
 	t.Cleanup(func() { cancel(); backend.Close() })
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, st
 }
 
 // newTestServer wires a Server against the given mpv socket path and token,
@@ -49,9 +59,8 @@ func newTestServer(t *testing.T, socketPath, token string) (*httptest.Server, st
 	t.Helper()
 	cfg := config.Default()
 	cfg.IPCSocket = socketPath
-	cfg.Token = token
 	cfg.StateDir = t.TempDir()
-	ts := newServerForTest(t, cfg, nil)
+	ts, _ := newServerForTest(t, cfg, token, nil)
 	return ts, ts.URL
 }
 
@@ -251,4 +260,25 @@ func readFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) map[stri
 		t.Fatalf("frame not JSON (%s): %v", data, err)
 	}
 	return m
+}
+
+// With no token set, authenticated endpoints refuse every request, including
+// one that sends an empty bearer token.
+func TestAuthRefusesWithoutToken(t *testing.T) {
+	ts, base := newTestServer(t, "/tmp/does-not-exist-mpv.sock", "")
+	_ = ts
+	for _, hdr := range []string{"", "Bearer ", "Bearer x"} {
+		req, _ := http.NewRequest("GET", base+"/status", nil)
+		if hdr != "" {
+			req.Header.Set("Authorization", hdr)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: status %d, want 401", hdr, resp.StatusCode)
+		}
+	}
 }

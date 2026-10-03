@@ -13,7 +13,7 @@ import (
 // The loopback control panel serves its page and a state feed without a bearer
 // token (httptest connects over loopback, which the gate allows).
 func TestPanelServesPageAndState(t *testing.T) {
-	base, cfg := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
+	base, _ := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
 
 	page, err := http.Get(base + "/ui")
 	if err != nil {
@@ -35,7 +35,9 @@ func TestPanelServesPageAndState(t *testing.T) {
 	}
 	defer st.Body.Close()
 	var s struct {
-		Token            string `json:"token"`
+		Name             string `json:"name"`
+		Paired           bool   `json:"paired"`
+		Code             string `json:"code"`
 		Address          string `json:"address"`
 		PlayerRunning    bool   `json:"player_running"`
 		CinefinConnected bool   `json:"cinefin_connected"`
@@ -43,8 +45,8 @@ func TestPanelServesPageAndState(t *testing.T) {
 	if err := json.NewDecoder(st.Body).Decode(&s); err != nil {
 		t.Fatal(err)
 	}
-	if s.Token != cfg.Token {
-		t.Errorf("state token = %q, want %q", s.Token, cfg.Token)
+	if s.Name != "Test player" || !s.Paired || s.Code != "" {
+		t.Errorf("paired state = %+v (a paired player shows no code)", s)
 	}
 	if !strings.HasPrefix(s.Address, "http://") {
 		t.Errorf("state address = %q", s.Address)

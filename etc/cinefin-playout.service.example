@@ -10,17 +10,15 @@ User=YOUR_USERNAME
 Group=YOUR_USERNAME
 
 # Fallback X display for a desktop-session mpv: used only when the launch
-# config's mpv.graphics.display is blank (harmless if unused; DRM mode ignores
-# it). The launch config lives in config.toml's [mpv.graphics]/[mpv.audio],
-# normally set from Cinefin (PUT /hostconfig) or hand-edited.
+# config's graphics.display is blank (harmless if unused; DRM mode ignores it).
+# The launch config is set from Cinefin and kept in the agent's state file.
 Environment=DISPLAY=:0
 # For DRM mode (hostconfig graphics.mode = "drm"), grant device access:
 # SupplementaryGroups=video render
-# Config search order: --config flag, then $CINEFIN_PLAYOUT_CONFIG, then
-# ./config.toml, ~/.config/cinefin-playout/config.toml, /etc/…/config.toml.
-# --no-ui keeps the service headless even for a -tags ui build (the tray defaults
-# on); drop it if you want the tray in an interactive session.
-ExecStart=/usr/local/bin/cinefin-playout --config /etc/cinefin-playout/config.toml --no-ui
+# There is no config file: startup options are flags (--listen, --port, --mpv,
+# --state-dir). State (token, launch config) lives in ~/.local/state/cinefin-playout
+# for the User above. --no-ui keeps the service headless.
+ExecStart=/usr/local/bin/cinefin-playout --no-ui
 
 Restart=always
 RestartSec=3

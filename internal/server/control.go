@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"strconv"
 	"sync"
 )
 
@@ -93,8 +94,17 @@ func (c *control) inbound(raw []byte) {
 	c.toClient(errorFrame(requestID(raw), "mpv not running"))
 }
 
-// fromMPV forwards one raw mpv frame (reply or event) to the current client.
-func (c *control) fromMPV(raw []byte) { c.toClient(raw) }
+// fromMPV forwards one raw mpv frame (reply or event) to the current client,
+// except replies to the agent's own commands (the pairing card).
+func (c *control) fromMPV(raw []byte) {
+	if string(requestID(raw)) == cardRequestIDJSON {
+		return
+	}
+	c.toClient(raw)
+}
+
+// cardRequestIDJSON is cardRequestID as it appears in a reply frame.
+var cardRequestIDJSON = strconv.Itoa(cardRequestID)
 
 func (c *control) toClient(frame []byte) {
 	c.mu.Lock()

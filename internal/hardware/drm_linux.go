@@ -58,3 +58,16 @@ func DRMConnectorStatuses(drmRoot string) map[string]string {
 	}
 	return out
 }
+
+// ConnectedDRMConnectors lists the connectors with a screen attached, sorted,
+// so "the first screen" is stable between runs.
+func ConnectedDRMConnectors() []string {
+	var out []string
+	for name, status := range DRMConnectorStatuses("") {
+		if status == "connected" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}

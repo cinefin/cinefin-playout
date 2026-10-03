@@ -1,6 +1,7 @@
 package hostconfig
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -151,9 +152,15 @@ func TestValidate(t *testing.T) {
 	}{
 		{"valid desktop", func(hc *HostConfig) {}, false},
 		{"bad mode", func(hc *HostConfig) { hc.Graphics.Mode = "wibble" }, true},
+		// No connector is allowed: mpv then uses the first connected screen.
 		{"drm without connector", func(hc *HostConfig) {
 			hc.Graphics.Mode = ModeDRM
 			hc.Graphics.DRMConnector = ""
+		}, runtime.GOOS == "windows"},
+		{"vulkan on the drm context", func(hc *HostConfig) {
+			hc.Graphics.Mode = ModeDRM
+			hc.Graphics.GPUAPI = "vulkan"
+			hc.Graphics.GPUContext = "drm"
 		}, true},
 		{"negative max_volume", func(hc *HostConfig) { hc.Audio.MaxVolume = -5 }, true},
 	}
@@ -166,5 +173,42 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// The pairing card needs a clean full screen: no on-screen controller and no
+// idle media, and it must start even if the stored config would not autostart.
+func TestPairingLaunch(t *testing.T) {
+	hc := Pairing()
+	if !hc.Autostart || !hc.Graphics.Fullscreen || hc.Graphics.OSC || hc.Graphics.IdleMedia != "" {
+		t.Errorf("pairing launch config = %+v", hc)
+	}
+	if hc.Graphics.Display != "" {
+		t.Errorf("pairing launch must inherit DISPLAY, got %q", hc.Graphics.Display)
+	}
+}
+
+func TestPickScreen(t *testing.T) {
+	desktop := Preset("linux")
+	if err := desktop.PickScreen("2", nil); err != nil || desktop.Graphics.Screen != 2 {
+		t.Errorf("index: screen=%d err=%v", desktop.Graphics.Screen, err)
+	}
+	if err := desktop.PickScreen("HDMI-A-1", nil); err != nil || desktop.Graphics.ScreenName != "HDMI-A-1" {
+		t.Fatalf("name: %+v err=%v", desktop.Graphics, err)
+	}
+	args := BuildMPVArgs(desktop, "/tmp/s")
+	if !hasArg(args, "--screen-name=HDMI-A-1") || !hasArg(args, "--fs-screen-name=HDMI-A-1") {
+		t.Errorf("screen name not in args: %v", args)
+	}
+
+	drm := PresetDRM("")
+	if err := drm.PickScreen("1", []string{"DP-1", "HDMI-A-1"}); err != nil || drm.Graphics.DRMConnector != "HDMI-A-1" {
+		t.Errorf("drm index: %q err=%v", drm.Graphics.DRMConnector, err)
+	}
+	if err := drm.PickScreen("DP-2", nil); err != nil || drm.Graphics.DRMConnector != "DP-2" {
+		t.Errorf("drm name: %q err=%v", drm.Graphics.DRMConnector, err)
+	}
+	if err := drm.PickScreen("5", []string{"DP-1"}); err == nil {
+		t.Error("drm index past the connected screens should fail")
 	}
 }

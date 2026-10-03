@@ -4,8 +4,6 @@ package ui
 
 import (
 	"context"
-	"net"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -31,34 +29,46 @@ func RunTray(ctx context.Context, deps TrayDeps) error {
 
 		mPlayer := systray.AddMenuItem("Player: …", "")
 		mCine := systray.AddMenuItem("Cinefin: …", "")
-		mAddr := systray.AddMenuItem("", "This host's address")
+		mCode := systray.AddMenuItem("", "Enter this code in Cinefin to pair this player")
+		mAddr := systray.AddMenuItem("", "This player's address")
 		mPlayer.Disable()
 		mCine.Disable()
+		mCode.Disable()
 		mAddr.Disable()
 		systray.AddSeparator()
-		mPanel := systray.AddMenuItem("Open control panel…", "Open the status & control page in your browser")
-		mCopyAddr := systray.AddMenuItem("Copy address", "Copy this host's address for Cinefin")
-		mCopyToken := systray.AddMenuItem("Copy token", "Copy the pairing token for Cinefin")
+		mPanel := systray.AddMenuItem("Open status page…", "Open the status page in your browser")
+		mCopyAddr := systray.AddMenuItem("Copy address", "Copy this player's address, to add it in Cinefin by hand")
 		systray.AddSeparator()
 		mStart := systray.AddMenuItem("Start player", "")
 		mStop := systray.AddMenuItem("Stop player", "")
 		mRestart := systray.AddMenuItem("Restart player", "")
 		systray.AddSeparator()
+		// A submenu is the confirmation: forgetting takes two deliberate clicks.
+		mForget := systray.AddMenuItem("Forget Cinefin", "Unpair this player; it shows a new pairing code")
+		mForgetYes := mForget.AddSubMenuItem("Yes, forget this Cinefin", "")
 		mQuit := systray.AddMenuItem("Quit", "Stop the agent")
 
-		address := pairingAddress(deps.Port)
-		mAddr.SetTitle(address)
-
 		refresh := func() {
+			mAddr.SetTitle(deps.Address())
 			if deps.PlayerRunning() {
 				mPlayer.SetTitle("● Player: running")
 			} else {
 				mPlayer.SetTitle("○ Player: stopped")
 			}
-			if deps.CinefinConnected() {
+			switch {
+			case !deps.Paired():
+				mCine.SetTitle("○ Cinefin: not paired")
+				mCode.SetTitle("Pairing code: " + deps.Code())
+				mCode.Show()
+				mForget.Disable()
+			case deps.CinefinConnected():
 				mCine.SetTitle("● Cinefin: connected")
-			} else {
-				mCine.SetTitle("○ Cinefin: not connected")
+				mCode.Hide()
+				mForget.Enable()
+			default:
+				mCine.SetTitle("○ Cinefin: paired, not connected")
+				mCode.Hide()
+				mForget.Enable()
 			}
 		}
 		refresh()
@@ -76,9 +86,7 @@ func RunTray(ctx context.Context, deps TrayDeps) error {
 				case <-mPanel.ClickedCh:
 					openControlPanel(deps.Port)
 				case <-mCopyAddr.ClickedCh:
-					_ = clipboard.WriteAll(address)
-				case <-mCopyToken.ClickedCh:
-					_ = clipboard.WriteAll(deps.Token)
+					_ = clipboard.WriteAll(deps.Address())
 				case <-mStart.ClickedCh:
 					deps.Start()
 					refresh()
@@ -87,6 +95,9 @@ func RunTray(ctx context.Context, deps TrayDeps) error {
 					refresh()
 				case <-mRestart.ClickedCh:
 					deps.Restart()
+					refresh()
+				case <-mForgetYes.ClickedCh:
+					deps.Forget()
 					refresh()
 				case <-mQuit.ClickedCh:
 					systray.Quit()
@@ -116,31 +127,4 @@ func openControlPanel(port int) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	_ = cmd.Start()
-}
-
-// pairingAddress is the URL to paste into Cinefin: the host's primary LAN IP
-// (falling back to hostname) and the agent port.
-func pairingAddress(port int) string {
-	host := primaryIP()
-	if host == "" {
-		if hn, err := os.Hostname(); err == nil {
-			host = hn
-		} else {
-			host = "127.0.0.1"
-		}
-	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
-}
-
-// primaryIP returns the machine's primary outbound IP without sending packets.
-func primaryIP() string {
-	c, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return ""
-	}
-	defer c.Close()
-	if addr, ok := c.LocalAddr().(*net.UDPAddr); ok {
-		return addr.IP.String()
-	}
-	return ""
 }

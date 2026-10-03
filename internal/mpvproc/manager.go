@@ -47,9 +47,8 @@ type Status struct {
 }
 
 // HostConfigProvider yields the current launch config at spawn time. main wires
-// this to a fresh config.Load of config.toml so an edit to the [graphics]/[audio]
-// sections takes effect on the next (re)start without the manager caching a
-// stale copy.
+// it to the state store, so a launch config Cinefin sets takes effect on the
+// next (re)start without the manager caching a stale copy.
 type HostConfigProvider func() hostconfig.HostConfig
 
 // Manager supervises the mpv child process.
@@ -242,9 +241,6 @@ func (m *Manager) spawnEnv(hc hostconfig.HostConfig) []string {
 	// (e.g. the systemd unit's Environment=DISPLAY=:0). DRM mode uses no display.
 	if hc.Graphics.Mode == hostconfig.ModeDesktop && hc.Graphics.Display != "" {
 		env = append(env, "DISPLAY="+hc.Graphics.Display)
-	}
-	for k, v := range m.cfg.ExtraEnv {
-		env = append(env, k+"="+v)
 	}
 	return env
 }

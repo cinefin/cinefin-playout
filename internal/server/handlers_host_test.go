@@ -6,25 +6,23 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/cinefin/cinefin-playout/internal/config"
 	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/state"
 )
 
-// newHostTestServer builds a Server with a temp state_dir and config.toml path,
-// pointed at socketPath for reachability.
-func newHostTestServer(t *testing.T, socketPath string) (string, config.Config) {
+// newHostTestServer builds a Server with a temp state dir, pointed at
+// socketPath for reachability. It returns the base URL and the state store.
+func newHostTestServer(t *testing.T, socketPath string) (string, *state.Store) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.IPCSocket = socketPath
-	cfg.Token = "secret"
 	cfg.StateDir = t.TempDir()
-	cfg.Path = filepath.Join(t.TempDir(), "config.toml")
-	ts := newServerForTest(t, cfg, nil)
-	return ts.URL, cfg
+	ts, st := newServerForTest(t, cfg, "secret", nil)
+	return ts.URL, st
 }
 
 func do(t *testing.T, method, url string, body []byte) *http.Response {
@@ -61,12 +59,12 @@ func TestGetHostConfigDefault(t *testing.T) {
 	}
 }
 
-// A full launch config PUT is validated, persisted to config.toml and reflected
-// by a subsequent GET.
+// A full launch config PUT is validated, persisted to the state file and
+// reflected by a subsequent GET.
 func TestPutHostConfigPersistsAndRoundTrips(t *testing.T) {
-	base, cfg := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
+	base, st := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
 
-	hc := config.Default().HostConfig
+	hc := hostconfig.Default()
 	hc.Autostart = false
 	hc.Graphics.Mode = hostconfig.ModeDesktop
 	hc.Graphics.VO = "gpu"
@@ -81,13 +79,13 @@ func TestPutHostConfigPersistsAndRoundTrips(t *testing.T) {
 		t.Fatalf("PUT /hostconfig = %d", resp.StatusCode)
 	}
 
-	loaded, err := config.Load(cfg.Path)
+	loaded, err := state.Open(filepath.Dir(st.Path()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Autostart || loaded.Graphics.VO != "gpu" || loaded.Graphics.Screen != 1 ||
-		loaded.Audio.Device != "wasapi" || loaded.Audio.MaxVolume != 110 {
-		t.Errorf("launch config not persisted: %+v", loaded.HostConfig)
+	if l := loaded.Launch(); l.Autostart || l.Graphics.VO != "gpu" || l.Graphics.Screen != 1 ||
+		l.Audio.Device != "wasapi" || l.Audio.MaxVolume != 110 {
+		t.Errorf("launch config not persisted: %+v", l)
 	}
 
 	// A subsequent GET reflects the written values.
@@ -102,12 +100,11 @@ func TestPutHostConfigPersistsAndRoundTrips(t *testing.T) {
 
 // An invalid launch config is rejected (400) and nothing is written.
 func TestPutHostConfigRejectsInvalid(t *testing.T) {
-	base, cfg := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
+	base, st := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
 
-	// drm mode with no connector fails hostconfig.Validate.
-	bad := config.Default().HostConfig
-	bad.Graphics.Mode = hostconfig.ModeDRM
-	bad.Graphics.DRMConnector = ""
+	// An unknown graphics mode fails hostconfig.Validate.
+	bad := hostconfig.Default()
+	bad.Graphics.Mode = "wibble"
 	body, _ := json.Marshal(bad)
 
 	resp := do(t, "PUT", base+"/hostconfig", body)
@@ -115,21 +112,21 @@ func TestPutHostConfigRejectsInvalid(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("PUT invalid /hostconfig = %d, want 400", resp.StatusCode)
 	}
-	if _, err := os.Stat(cfg.Path); err == nil {
-		t.Errorf("rejected PUT must not write config.toml")
+	if st.Launch().Graphics.Mode == "wibble" {
+		t.Errorf("rejected PUT must not change the launch config")
 	}
 }
 
 // Only the idle media (the Cinefin-owned cinema ident) is pushed by the narrow
 // idle-media PUT, and it must leave the rest of the config untouched.
 func TestPutIdleMediaPersistsOnly(t *testing.T) {
-	base, cfg := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
+	base, st := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
 
-	// Seed a known launch config in config.toml.
-	seed := config.Default()
+	// Seed a known launch config.
+	seed := hostconfig.Default()
 	seed.Audio.Device = "pipewire"
 	seed.Graphics.Screen = 2
-	if err := config.WriteLaunchConfig(cfg.Path, seed); err != nil {
+	if err := st.SetLaunch(seed); err != nil {
 		t.Fatal(err)
 	}
 
@@ -146,10 +143,7 @@ func TestPutIdleMediaPersistsOnly(t *testing.T) {
 		t.Errorf("restart_required should be false when mpv is not running")
 	}
 
-	loaded, err := config.Load(cfg.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	loaded := st.Launch()
 	if loaded.Graphics.IdleMedia != "http://cinefin/ident.mp4" {
 		t.Errorf("idle_media not persisted: %q", loaded.Graphics.IdleMedia)
 	}

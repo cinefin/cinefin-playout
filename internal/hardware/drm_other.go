@@ -6,3 +6,6 @@ package hardware
 func drmConnectors(_ string) []string {
 	return []string{}
 }
+
+// ConnectedDRMConnectors is Linux-only; other platforms have none.
+func ConnectedDRMConnectors() []string { return nil }

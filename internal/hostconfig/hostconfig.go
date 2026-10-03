@@ -1,10 +1,9 @@
 // Package hostconfig defines the playout host's graphics + audio launch config
 // and turns it into an mpv command line.
 //
-// The values themselves are loaded from and saved to config.toml by the config
-// package (the [graphics]/[audio] sections); this package no longer does any
-// file I/O. It owns the launch-config *types*, the shipped per-OS presets, the
-// validation rules, and BuildMPVArgs — the single place that decides the actual
+// The values themselves are set by Cinefin and persisted by the state package;
+// this package does no file I/O. It owns the launch-config *types*, the shipped
+// per-OS presets, the validation rules, and BuildMPVArgs — the single place that decides the actual
 // mpv command line (the responsibility that used to live in Cinefin's pushed
 // MPVLaunchConfig / build_mpv_args; see docs/ARCHITECTURE.md, "Config
 // ownership").
@@ -15,6 +14,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/cinefin/cinefin-playout/internal/session"
 )
 
 // Graphics mode values.
@@ -25,19 +26,20 @@ const (
 
 // Graphics is the host's video-output configuration.
 type Graphics struct {
-	Mode           string `json:"mode"`            // "desktop" | "drm"
-	VO             string `json:"vo"`              // e.g. "gpu-next"
-	GPUAPI         string `json:"gpu_api"`         // "" = mpv default
-	GPUContext     string `json:"gpu_context"`     // e.g. "displayvk" / "drm"
-	HWDec          string `json:"hwdec"`           // e.g. "auto"
-	Screen         int    `json:"screen"`          // desktop mode
-	DRMConnector   string `json:"drm_connector"`   // drm mode, e.g. "HDMI-A-1"
-	DRMMode        string `json:"drm_mode"`        // optional pinned mode
-	Fullscreen     bool   `json:"fullscreen"`      //
-	HDRPassthrough bool   `json:"hdr_passthrough"` //
-	OSC            bool   `json:"osc"`             // mpv on-screen controller (seek bar / controls on mouse-over)
-	Display        string `json:"display"`         // X display (desktop); "" for drm
-	IdleMedia      string `json:"idle_media"`      // ident/boot image shown paused before Cinefin connects
+	Mode           string `json:"mode"`                  // "desktop" | "drm"
+	VO             string `json:"vo"`                    // e.g. "gpu-next"
+	GPUAPI         string `json:"gpu_api"`               // "" = mpv default
+	GPUContext     string `json:"gpu_context"`           // e.g. "displayvk" / "drm"
+	HWDec          string `json:"hwdec"`                 // e.g. "auto"
+	Screen         int    `json:"screen"`                // desktop mode
+	ScreenName     string `json:"screen_name,omitempty"` // desktop mode: output name (e.g. "HDMI-A-1"); wins over Screen
+	DRMConnector   string `json:"drm_connector"`         // drm mode, e.g. "HDMI-A-1"
+	DRMMode        string `json:"drm_mode"`              // optional pinned mode
+	Fullscreen     bool   `json:"fullscreen"`            //
+	HDRPassthrough bool   `json:"hdr_passthrough"`       //
+	OSC            bool   `json:"osc"`                   // mpv on-screen controller (seek bar / controls on mouse-over)
+	Display        string `json:"display"`               // X display (desktop); "" for drm
+	IdleMedia      string `json:"idle_media"`            // ident/boot image shown paused before Cinefin connects
 }
 
 // Audio is the host's audio-output configuration.
@@ -118,6 +120,59 @@ func Preset(goos string) HostConfig {
 	}
 }
 
+// Detect returns the default launch config for this machine: the OS preset, or
+// on a Linux box with no desktop session, DRM output with no connector pinned
+// (mpv then uses the first connected screen). The X display is left blank so
+// mpv inherits the agent's own DISPLAY.
+func Detect() HostConfig {
+	hc := Default()
+	hc.Graphics.Display = ""
+	if runtime.GOOS == "linux" && !session.Desktop() {
+		hc.Graphics.Mode = ModeDRM
+		hc.Graphics.GPUContext = "drm"
+	}
+	return hc
+}
+
+// Pairing is the launch config for an unpaired player: Detect with a clean
+// full screen (no on-screen controller, no idle media) that the agent draws the
+// pairing card on.
+func Pairing() HostConfig {
+	hc := Detect()
+	hc.Autostart = true
+	hc.Graphics.Fullscreen = true
+	hc.Graphics.OSC = false
+	hc.Graphics.IdleMedia = ""
+	return hc
+}
+
+// PickScreen points hc at the screen given on the command line (--display): a
+// number is a screen index, anything else an output name such as "HDMI-A-1".
+// In DRM mode the screen is a connector, so a number picks the index-th entry
+// of connected (the connected connectors, sorted).
+func (hc *HostConfig) PickScreen(screen string, connected []string) error {
+	n, err := strconv.Atoi(screen)
+	isIndex := err == nil
+	if isIndex && n < 0 {
+		return fmt.Errorf("screen %d: must be 0 or more", n)
+	}
+	g := &hc.Graphics
+	switch {
+	case g.Mode == ModeDRM && isIndex:
+		if n >= len(connected) {
+			return fmt.Errorf("screen %d: only %d connected screen(s) %v", n, len(connected), connected)
+		}
+		g.DRMConnector = connected[n]
+	case g.Mode == ModeDRM:
+		g.DRMConnector = screen
+	case isIndex:
+		g.Screen, g.ScreenName = n, ""
+	default:
+		g.ScreenName = screen
+	}
+	return nil
+}
+
 // PresetDRM returns the Linux Direct/DRM preset for the headless booth box:
 // Vulkan displayvk on a chosen connector. Linux only (Windows is desktop-only).
 func PresetDRM(connector string) HostConfig {
@@ -140,9 +195,6 @@ func (hc HostConfig) Validate() error {
 	}
 	if hc.Graphics.Mode == ModeDRM && runtime.GOOS == "windows" {
 		return fmt.Errorf("graphics.mode=drm is not supported on windows (desktop only)")
-	}
-	if hc.Graphics.Mode == ModeDRM && strings.TrimSpace(hc.Graphics.DRMConnector) == "" {
-		return fmt.Errorf("graphics.drm_connector is required in drm mode")
 	}
 	// gpu_context "drm" is an OpenGL/EGL context; it cannot serve the Vulkan API.
 	// Vulkan on a DRM/KMS console wants gpu_context "displayvk" (or left blank to
@@ -196,8 +248,12 @@ func BuildMPVArgs(hc HostConfig, ipcSocket string) []string {
 			args = append(args, "--drm-mode="+g.DRMMode)
 		}
 	} else {
-		// Desktop mode: --screen applies.
-		args = append(args, "--screen="+strconv.Itoa(g.Screen))
+		// Desktop mode: the screen by output name when set, else by index.
+		if g.ScreenName != "" {
+			args = append(args, "--screen-name="+g.ScreenName, "--fs-screen-name="+g.ScreenName)
+		} else {
+			args = append(args, "--screen="+strconv.Itoa(g.Screen))
+		}
 	}
 
 	// HDR passthrough: tell mpv to target the display's native colorspace so an

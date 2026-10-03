@@ -1,9 +1,9 @@
 // Package ui is the agent's optional desktop shell for operators who run the
 // agent interactively rather than as a headless service: a system-tray icon
-// (menu-only) with live status, pairing (copy address/token) and
-// start/stop/restart — all driven in-process. "Open control panel…" launches
-// the agent's loopback-only /ui status page in the operator's default browser,
-// so there is no embedded webview to build or ship.
+// (menu-only) with live status, the pairing code while unpaired, forgetting the
+// Cinefin pairing, and start/stop/restart, all driven in-process. "Open status
+// page…" launches the agent's loopback-only /ui page in the default browser, so
+// there is no embedded webview to build or ship.
 //
 // It is compiled only under the `ui` build tag (native toolkit: systray, which
 // talks to the desktop over D-Bus/GDI — no webview). The default build gets the
@@ -14,11 +14,14 @@ package ui
 // package stays decoupled from the server/player internals. The closures are
 // called from the tray's goroutine.
 type TrayDeps struct {
-	Port             int         // agent HTTP port, for the pairing address
-	Token            string      // pairing token, for "Copy token"
-	PlayerRunning    func() bool // is mpv up
-	CinefinConnected func() bool // is a control client connected
-	Start            func()      // start / stop / restart the player
-	Stop             func()      //
-	Restart          func()      //
+	Port             int           // agent HTTP port, for the status page URL
+	Address          func() string // this player's address, for adding it by hand
+	Paired           func() bool   // has a Cinefin paired with this player
+	Code             func() string // the current pairing code, for display
+	PlayerRunning    func() bool   // is mpv up
+	CinefinConnected func() bool   // is a control client connected
+	Start            func()        // start / stop / restart the player
+	Stop             func()        //
+	Restart          func()        //
+	Forget           func()        // forget the Cinefin pairing
 }

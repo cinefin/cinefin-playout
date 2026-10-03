@@ -6,37 +6,20 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cinefin/cinefin-playout/internal/config"
 	"github.com/cinefin/cinefin-playout/internal/hardware"
 	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
-// currentConfig re-reads config.toml so a config edit (a PUT, or a hand-edit on
-// the host) is reflected, falling back to the startup snapshot if there is no
-// file or it fails to load.
-func (s *Server) currentConfig() config.Config {
-	if s.cfg.Path == "" {
-		return s.cfg
-	}
-	c, err := config.Load(s.cfg.Path)
-	if err != nil {
-		s.log.Printf("config reload: %v", err)
-		return s.cfg
-	}
-	return c
-}
-
-// handleGetHostConfig returns the launch config (autostart + graphics + audio,
-// from config.toml's [mpv.graphics]/[mpv.audio] and [mpv].autostart).
+// handleGetHostConfig returns the launch config (autostart + graphics + audio):
+// the one Cinefin last set, or this machine's preset defaults.
 func (s *Server) handleGetHostConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.currentConfig().HostConfig)
+	writeJSON(w, http.StatusOK, s.state.Launch())
 }
 
 // handlePutHostConfig replaces the whole launch config (autostart + graphics +
 // audio). Cinefin edits it per PlayoutHost, using /hardware for device
-// dropdowns; the agent validates it and persists it to config.toml — the source
-// of truth on the host — applying it on the next player restart. Returns
-// {restart_required} when mpv is up.
+// dropdowns; the agent validates it and keeps it in its state file, applying it
+// on the next player restart. Returns {restart_required} when mpv is up.
 func (s *Server) handlePutHostConfig(w http.ResponseWriter, r *http.Request) {
 	var hc hostconfig.HostConfig
 	if err := json.NewDecoder(r.Body).Decode(&hc); err != nil {
@@ -47,13 +30,7 @@ func (s *Server) handlePutHostConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	c := s.currentConfig()
-	c.HostConfig = hc
-	if err := config.WriteLaunchConfig(c.WriteTarget(), c); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"restart_required": s.mpvRunning()})
+	s.saveLaunch(w, hc)
 }
 
 // handlePutIdleMedia updates only the idle-screen media (graphics.idle_media) —
@@ -67,9 +44,14 @@ func (s *Server) handlePutIdleMedia(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	c := s.currentConfig()
-	c.Graphics.IdleMedia = body.IdleMedia
-	if err := config.WriteLaunchConfig(c.WriteTarget(), c); err != nil {
+	hc := s.state.Launch()
+	hc.Graphics.IdleMedia = body.IdleMedia
+	s.saveLaunch(w, hc)
+}
+
+// saveLaunch persists hc and replies {restart_required}.
+func (s *Server) saveLaunch(w http.ResponseWriter, hc hostconfig.HostConfig) {
+	if err := s.state.SetLaunch(hc); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

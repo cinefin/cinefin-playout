@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cinefin/cinefin-playout/internal/netaddr"
+	"github.com/cinefin/cinefin-playout/internal/pairing"
 	"github.com/cinefin/cinefin-playout/internal/version"
 )
 
@@ -30,6 +32,7 @@ func (s *Server) registerPanel(mux *http.ServeMux) {
 	mux.Handle("POST /ui/player/start", loopbackOnly(http.HandlerFunc(s.handleMPVStart)))
 	mux.Handle("POST /ui/player/stop", loopbackOnly(http.HandlerFunc(s.handleMPVStop)))
 	mux.Handle("POST /ui/player/restart", loopbackOnly(http.HandlerFunc(s.handleMPVRestart)))
+	mux.Handle("POST /ui/unpair", loopbackOnly(http.HandlerFunc(s.handleUnpair)))
 }
 
 // loopbackOnly rejects any request whose peer is not on the loopback interface.
@@ -57,29 +60,36 @@ func (s *Server) handlePanelIndex(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(page)
 }
 
-// handlePanelState feeds the panel: player/control status plus the pairing
-// address and token to copy into Cinefin.
+// handlePanelState feeds the panel: player/control status, the player's name
+// and address, and while unpaired the pairing code and when it changes.
 func (s *Server) handlePanelState(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	_, reachable := s.backend.Probe(ctx)
 	st := s.backend.Status()
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"version":           version.Version,
 		"os":                runtime.GOOS,
 		"arch":              runtime.GOARCH,
+		"name":              s.id.Name,
 		"address":           s.pairingAddress(),
-		"token":             s.cfg.Token,
+		"paired":            s.state.Paired(),
 		"player_running":    st.Running,
 		"mpv_reachable":     reachable,
 		"cinefin_connected": s.control.connected(),
-	})
+	}
+	if !s.state.Paired() {
+		code, expires := s.codes.Current()
+		out["code"] = pairing.Format(code)
+		out["code_expires_in"] = int(time.Until(expires).Seconds())
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // pairingAddress is the URL to paste into Cinefin: the host's primary LAN IP
 // (falling back to hostname, then loopback) and the agent port.
 func (s *Server) pairingAddress() string {
-	host := primaryIP()
+	host := netaddr.PrimaryIP()
 	if host == "" {
 		if hn, err := os.Hostname(); err == nil && hn != "" {
 			host = hn
@@ -88,17 +98,4 @@ func (s *Server) pairingAddress() string {
 		}
 	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(s.cfg.Port))
-}
-
-// primaryIP returns the machine's primary outbound IP without sending packets.
-func primaryIP() string {
-	c, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return ""
-	}
-	defer c.Close()
-	if addr, ok := c.LocalAddr().(*net.UDPAddr); ok {
-		return addr.IP.String()
-	}
-	return ""
 }
