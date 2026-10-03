@@ -4,9 +4,7 @@ package ui
 
 import (
 	"context"
-	"os/exec"
 	"runtime"
-	"strconv"
 	"time"
 
 	"fyne.io/systray"
@@ -24,19 +22,24 @@ func RunTray(ctx context.Context, deps TrayDeps) error {
 		if len(trayIcon) > 0 {
 			systray.SetIcon(trayIcon)
 		}
-		systray.SetTitle("Cinefin Playout")
+		// macOS draws the title as text beside the icon in the menu bar; show only
+		// the icon there. Elsewhere the title is the item's name, not visible text.
+		if runtime.GOOS != "darwin" {
+			systray.SetTitle("Cinefin Playout")
+		}
 		systray.SetTooltip("Cinefin Playout agent")
 
 		mPlayer := systray.AddMenuItem("Player: …", "")
 		mCine := systray.AddMenuItem("Cinefin: …", "")
 		mCode := systray.AddMenuItem("", "Enter this code in Cinefin to pair this player")
 		mAddr := systray.AddMenuItem("", "This player's address")
+		mVersion := systray.AddMenuItem("cinefin-playout "+deps.Version, "This player's version")
 		mPlayer.Disable()
 		mCine.Disable()
 		mCode.Disable()
 		mAddr.Disable()
+		mVersion.Disable()
 		systray.AddSeparator()
-		mPanel := systray.AddMenuItem("Open status page…", "Open the status page in your browser")
 		mCopyAddr := systray.AddMenuItem("Copy address", "Copy this player's address, to add it in Cinefin by hand")
 		systray.AddSeparator()
 		mStart := systray.AddMenuItem("Start player", "")
@@ -83,8 +86,6 @@ func RunTray(ctx context.Context, deps TrayDeps) error {
 					return
 				case <-t.C:
 					refresh()
-				case <-mPanel.ClickedCh:
-					openControlPanel(deps.Port)
 				case <-mCopyAddr.ClickedCh:
 					_ = clipboard.WriteAll(deps.Address())
 				case <-mStart.ClickedCh:
@@ -109,22 +110,4 @@ func RunTray(ctx context.Context, deps TrayDeps) error {
 
 	systray.Run(onReady, func() {})
 	return nil
-}
-
-// openControlPanel opens the agent's loopback /ui status-and-control page in the
-// operator's default browser. The page (served by the agent itself) holds all
-// the status/control logic; the tray just launches it, so there is no embedded
-// webview to build or ship.
-func openControlPanel(port int) {
-	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/ui"
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	case "darwin":
-		cmd = exec.Command("open", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	_ = cmd.Start()
 }

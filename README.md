@@ -140,7 +140,9 @@ the same when Cinefin is unreachable. Until then, or while unpaired, the player
 uses the System Ident built into it.
 
 The player goes to standby when mpv starts, when Cinefin asks, and when Cinefin
-has been unreachable for 30 seconds with nothing loaded.
+has been unreachable for 30 seconds with nothing loaded. If Cinefin goes away
+during a programme's command hold, after 30 seconds the player ends the hold
+and plays the rest of the programme by itself.
 
 When Cinefin turns on the status line for the player, standby shows one line
 along the bottom of the screen: the cinema's name on the left, and on the
@@ -243,14 +245,17 @@ For the full design, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## API
 
-Everything except `/health`, `/pair` and the loopback-only `/ui` needs an
+Everything except `/health`, `/pair` and the loopback-only `/local/unpair` needs an
 `Authorization: Bearer <token>` header. Cinefin gets the token by pairing.
+Everything except `/health` also needs a `Cinefin-Protocol` header within the
+range the player serves; otherwise it answers `426` and says whether Cinefin or
+the player needs updating (see `docs/ARCHITECTURE.md`, Protocol).
 Traffic is plain HTTP for a trusted LAN. Do not expose it to the internet; put a
 reverse proxy in front if you need TLS.
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| GET  | `/health` | Liveness, version, os/arch, id, name, paired, protocol (no auth). |
+| GET  | `/health` | Liveness, version, os/arch, id, name, paired, protocol range (no auth). |
 | POST | `/pair` | Exchange the on-screen code (`{"code": "482913"}`) for the token (no auth). |
 | POST | `/unpair` | Forget the pairing; the player shows a new code. |
 | GET  | `/status` | Agent, mpv, control-link, standby, test card and test sound status. |
@@ -263,7 +268,7 @@ reverse proxy in front if you need TLS.
 | POST | `/testsound` | Play the left/right test tone (on standby or with the test card on). |
 | GET  | `/hardware` | Audio devices, DRM connectors, screens, and mpv features. |
 | POST | `/mpv/start`, `/mpv/stop`, `/mpv/restart` | Player lifecycle. |
-| GET  | `/ui` | Status page (loopback only). |
+| POST | `/local/unpair` | Forget the pairing, for `cinefin-playout reset` (loopback only, no token). |
 
 ## Build from source
 
@@ -278,10 +283,15 @@ make check     # gofmt, vet, tests, and a cross-compile of every target
 (GDI), so it cross-compiles with CGO off. The tray needs cgo only on macOS (Cocoa):
 
 ```bash
-./scripts/build-macos-app.sh   # builds a self-contained "Cinefin Playout.app" into dist/
+make macos   # builds a self-contained "Cinefin Playout.app" into dist/
 ```
 
 Releases are built by CI. Which targets ship a bundled mpv is set by
 `mpv-bundle.json`, a map of `"<os>/<arch>"` to a download URL; targets with no entry
 ship without mpv, and every bundled target also gets a `-nompv` archive. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for more.
+
+## License
+
+GNU Affero General Public License v3.0, the same as Cinefin. See
+[LICENSE](LICENSE).

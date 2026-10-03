@@ -31,7 +31,8 @@ import (
 // bundled System Ident with ident.Options.
 //
 // The agent observes mpv's path (pathObserverID) so it knows whether mpv is on
-// standby or has nothing loaded, without asking.
+// standby or has nothing loaded, without asking, and its loop-file
+// (loopObserverID) for endHoldWhenAway.
 
 // identDir is where the downloaded ident is kept, inside the state directory.
 const identDir = "idents"
@@ -44,9 +45,12 @@ const (
 
 // standby is the agent's standby state. Guarded by mu.
 type standby struct {
-	mu     sync.Mutex
-	path   string // mpv's path, "" when nothing is loaded
-	loaded string // the file enterStandby last loaded
+	mu   sync.Mutex
+	path string // mpv's path, "" when nothing is loaded
+	// looping is set while mpv's loop-file is inf, which only Cinefin's
+	// command hold sets (standby holds with ab-loop or keep-open).
+	looping bool
+	loaded  string // the file enterStandby last loaded
 	// loadedAt is when enterStandby sent that loadfile. It stands for when
 	// the ident started: mpv reports the new path within a millisecond of the
 	// command and shows the first frame some tens of milliseconds later, so
@@ -69,6 +73,21 @@ func (sb *standby) idle() bool {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	return sb.path == ""
+}
+
+// loopingForever reports whether mpv's loop-file is inf.
+func (sb *standby) loopingForever() bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.looping
+}
+
+// observedLoop takes mpv's loop-file from a property-change event on the
+// agent's observer: "inf", a count, or false.
+func (sb *standby) observedLoop(data json.RawMessage) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.looping = string(data) == `"inf"`
 }
 
 // onStandby reports whether mpv is showing the standby file.
@@ -129,9 +148,13 @@ func (s *Server) mpvConnected(reconnect bool) {
 		s.card.forget()
 	}
 	s.standby.observed(nil)
+	s.standby.observedLoop(nil)
 	s.tone.reset()
 	if err := s.backend.Send(agentCommand("observe_property", pathObserverID, "path")); err != nil {
 		s.log.Printf("standby: observe mpv's path: %v", err)
+	}
+	if err := s.backend.Send(agentCommand("observe_property", loopObserverID, "loop-file")); err != nil {
+		s.log.Printf("standby: observe mpv's loop-file: %v", err)
 	}
 	s.enterStandby()
 }
@@ -163,7 +186,7 @@ func (s *Server) enterStandby() error {
 	sb.loaded, sb.loadedAt, sb.pending = path, time.Now(), true
 	sb.mu.Unlock()
 	// mpv 0.38 added the playlist index argument before the options.
-	if err := s.backend.Send(agentCommand("loadfile", path, "replace", -1, opts)); err != nil {
+	if err := s.backend.Send(agentCommand("loadfile", path, "replace", -1, titled(opts, identTitle))); err != nil {
 		sb.mu.Lock()
 		sb.pending = false
 		sb.mu.Unlock()
@@ -186,6 +209,19 @@ func (s *Server) pathChanged(data json.RawMessage) {
 func agentCommand(args ...any) []byte {
 	frame, _ := json.Marshal(map[string]any{"command": args, "request_id": agentRequestID})
 	return frame
+}
+
+// identTitle names the standby ident in mpv's window title, whether it is the
+// bundled System Ident or the cinema's copy of it from Cinefin.
+const identTitle = "System Ident"
+
+// titled adds force-media-title to a per-file options string, naming the file
+// in mpv's window title. The title must not contain a comma.
+func titled(opts, title string) string {
+	if opts == "" {
+		return "force-media-title=" + title
+	}
+	return opts + ",force-media-title=" + title
 }
 
 // cachedIdent is the downloaded ident with checksum sha, if it is here.

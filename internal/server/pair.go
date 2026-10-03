@@ -49,6 +49,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Printf("pairing: paired with %s", r.RemoteAddr)
+	s.mismatch.clear()
 	s.card.startConfirm(remoteHost(r.RemoteAddr), body.Code)
 	s.pairingChanged(true)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -59,6 +60,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		"os":            runtime.GOOS,
 		"arch":          runtime.GOARCH,
 		"protocol":      protocolVersion,
+		"min_protocol":  minProtocol,
 	})
 }
 
@@ -73,8 +75,8 @@ func (s *Server) handleUnpair(w http.ResponseWriter, _ *http.Request) {
 
 // Unpair forgets the pairing and the launch config Cinefin set, drops the
 // control link, and restarts the player so it shows the pairing card on this
-// machine's default screen. Used by POST /unpair, the loopback /ui/unpair (the
-// tray and `cinefin-playout reset`) and the status page.
+// machine's default screen. Used by POST /unpair, the loopback /local/unpair
+// (`cinefin-playout reset`) and the tray.
 func (s *Server) Unpair() error {
 	if err := s.state.Reset(); err != nil {
 		return err

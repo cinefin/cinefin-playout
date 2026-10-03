@@ -68,7 +68,8 @@ func Default() HostConfig {
 }
 
 // Preset returns the shipped default HostConfig for the named OS. Unknown OS
-// falls back to a conservative desktop gpu-next config.
+// falls back to a conservative desktop gpu-next config. Desktop presets open
+// mpv in a window; a saved config's fullscreen setting overrides that.
 func Preset(goos string) HostConfig {
 	switch goos {
 	case "windows":
@@ -82,7 +83,7 @@ func Preset(goos string) HostConfig {
 				GPUContext:     "",
 				HWDec:          "auto",
 				Screen:         0,
-				Fullscreen:     true,
+				Fullscreen:     false,
 				HDRPassthrough: true,
 				OSC:            false,
 				Display:        "",
@@ -105,7 +106,7 @@ func Preset(goos string) HostConfig {
 				GPUContext:     "",
 				HWDec:          "auto",
 				Screen:         0,
-				Fullscreen:     true,
+				Fullscreen:     false,
 				HDRPassthrough: true,
 				OSC:            false,
 				Display:        ":0",
@@ -130,16 +131,17 @@ func Detect() HostConfig {
 	if runtime.GOOS == "linux" && !session.Desktop() {
 		hc.Graphics.Mode = ModeDRM
 		hc.Graphics.GPUContext = "drm"
+		hc.Graphics.Fullscreen = true
 	}
 	return hc
 }
 
-// Pairing is the launch config for an unpaired player: Detect with a clean
-// full screen that the agent draws the pairing box on, over the standby ident.
+// Pairing is the launch config for an unpaired player: Detect, which the agent
+// draws the pairing box on, over the standby ident. On a desktop that is a
+// window, like the presets; DRM is always the full screen.
 func Pairing() HostConfig {
 	hc := Detect()
 	hc.Autostart = true
-	hc.Graphics.Fullscreen = true
 	return hc
 }
 
@@ -228,12 +230,18 @@ func (hc *HostConfig) PickMode(mode string) error {
 func PresetDRM(connector string) HostConfig {
 	hc := Preset("linux")
 	hc.Graphics.Mode = ModeDRM
+	hc.Graphics.Fullscreen = true
 	hc.Graphics.GPUAPI = "vulkan"
 	hc.Graphics.GPUContext = "displayvk"
 	hc.Graphics.DRMConnector = connector
 	hc.Graphics.Display = ""
 	return hc
 }
+
+// windowTitle is mpv's window title: what is playing, then the app name. The
+// agent and Cinefin name each file with the force-media-title file option
+// ("System Ident", "Trailer: …"); with nothing loaded it is just the app name.
+const windowTitle = "${?media-title:${media-title} — }Cinefin Playout"
 
 // Validate checks the config for internal consistency, returning a message on
 // the first problem. Used by PUT /hostconfig before persisting.
@@ -294,6 +302,7 @@ func BuildMPVArgs(hc HostConfig, ipcSocket string, mc MPVConfig) []string {
 		"--input-ipc-server="+ipcSocket,
 		"--idle=yes",
 		"--force-window=yes",
+		"--title="+windowTitle,
 	)
 
 	if g.Fullscreen {

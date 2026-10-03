@@ -49,8 +49,8 @@ var toneURL = func() string {
 }()
 
 // toneOptions are the tone's per-file options: play to the end and stop,
-// whatever Cinefin set globally, and with audio on.
-const toneOptions = "keep-open=no,loop-file=no,aid=auto"
+// whatever Cinefin set globally, and with audio on, named in the window title.
+const toneOptions = "keep-open=no,loop-file=no,aid=auto,force-media-title=Test Sound"
 
 // testSound is the test sound's state. Guarded by mu.
 type testSound struct {

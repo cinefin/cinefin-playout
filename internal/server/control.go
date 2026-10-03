@@ -26,11 +26,13 @@ type control struct {
 	mpv mpvLink
 
 	// onChange, if set, is called after a client attaches or detaches (the
-	// card redraws). onPath and onTime, if set, receive the agent's own
-	// observations of mpv's path (see Server.pathChanged) and of the test
-	// sound's position (Server.toneTime). New sets all three.
+	// card redraws). onPath, onLoop and onTime, if set, receive the agent's
+	// own observations of mpv's path (see Server.pathChanged), its loop-file
+	// (standby.observedLoop) and the test sound's position (Server.toneTime).
+	// New sets all four.
 	onChange func()
 	onPath   func(data json.RawMessage)
+	onLoop   func(data json.RawMessage)
 	onTime   func(data json.RawMessage)
 
 	mu      sync.Mutex
@@ -132,8 +134,8 @@ func (c *control) inbound(raw []byte) {
 
 // fromMPV forwards one raw mpv frame (reply or event) to the current client,
 // except the agent's own traffic: replies to its commands (the overlay and
-// standby), and changes to the properties it observes, which go to onPath and
-// onTime.
+// standby), and changes to the properties it observes, which go to onPath,
+// onLoop and onTime.
 func (c *control) fromMPV(raw []byte) {
 	var f struct {
 		RequestID json.RawMessage `json:"request_id"`
@@ -150,6 +152,11 @@ func (c *control) fromMPV(raw []byte) {
 				c.onPath(f.Data)
 			}
 			return
+		case f.Event == "property-change" && string(f.ID) == loopObserverIDJSON:
+			if c.onLoop != nil {
+				c.onLoop(f.Data)
+			}
+			return
 		case f.Event == "property-change" && string(f.ID) == timeObserverIDJSON:
 			if c.onTime != nil {
 				c.onTime(f.Data)
@@ -164,6 +171,7 @@ func (c *control) fromMPV(raw []byte) {
 var (
 	agentRequestIDJSON = strconv.Itoa(agentRequestID)
 	pathObserverIDJSON = strconv.Itoa(pathObserverID)
+	loopObserverIDJSON = strconv.Itoa(loopObserverID)
 )
 
 func (c *control) toClient(frame []byte) {

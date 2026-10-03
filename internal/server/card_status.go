@@ -25,6 +25,8 @@ const (
 	linkConnecting linkState = iota // not attached, for less than linkGrace
 	linkReady                       // attached
 	linkOffline                     // not attached for linkGrace or more
+	linkCinefinOld                  // not attached; Cinefin was refused as too old
+	linkPlayerOld                   // not attached; Cinefin was refused as too new
 )
 
 // linkStateAt is the link state at now for a link that has been connected (or
@@ -40,6 +42,20 @@ func linkStateAt(connected bool, since, now time.Time) linkState {
 	}
 }
 
+// linkStateLocked is linkStateAt, except that a link that is down because
+// Cinefin was refused for its protocol says which side needs updating.
+func (c *card) linkStateLocked(connected bool, since time.Time) linkState {
+	if !connected {
+		if _, cinefinOld, ok := c.s.mismatch.recent(); ok {
+			if cinefinOld {
+				return linkCinefinOld
+			}
+			return linkPlayerOld
+		}
+	}
+	return linkStateAt(connected, since, time.Now())
+}
+
 // statusScene is the status line for spec and the link's state now. The
 // player's name falls back to the agent's own. Caller holds c.mu.
 func (c *card) statusScene(spec *state.Standby) scene {
@@ -52,7 +68,7 @@ func (c *card) statusScene(spec *state.Standby) scene {
 		cinema:  spec.CinemaName,
 		player:  player,
 		address: c.s.state.CinefinAddress(),
-		link:    linkStateAt(connected, since, time.Now()),
+		link:    c.linkStateLocked(connected, since),
 	}
 }
 
@@ -98,6 +114,8 @@ var statusWords = map[linkState][2]string{
 	linkReady:      {statusGreen, "Ready"},
 	linkConnecting: {statusDetail, "Connecting to Cinefin"},
 	linkOffline:    {statusAmber, "Can't reach Cinefin"},
+	linkCinefinOld: {statusAmber, "Cinefin needs updating"},
+	linkPlayerOld:  {statusAmber, "This player needs updating"},
 }
 
 // statusLine lays out the status line as ASS events. The right end is one

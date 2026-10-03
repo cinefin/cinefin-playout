@@ -35,6 +35,7 @@ func TestBuildMPVArgsEnforcedFlags(t *testing.T) {
 		"--input-ipc-server=/tmp/scratch.sock",
 		"--idle=yes",
 		"--force-window=yes",
+		"--title=" + windowTitle,
 	} {
 		if !hasArg(args, must) {
 			t.Errorf("missing enforced flag %q in %v", must, args)
@@ -78,8 +79,12 @@ func TestBuildMPVArgsDesktopPreset(t *testing.T) {
 			t.Errorf("arg %q = %q (found=%v), want %q", prefix, got, ok, expect)
 		}
 	}
-	if !hasArg(args, "--fullscreen") {
-		t.Error("desktop preset should be fullscreen")
+	if hasArg(args, "--fullscreen") {
+		t.Error("desktop preset should open in a window")
+	}
+	hc.Graphics.Fullscreen = true
+	if !hasArg(BuildMPVArgs(hc, "/tmp/s.sock", MPVConfig{}), "--fullscreen") {
+		t.Error("a saved fullscreen config should emit --fullscreen")
 	}
 	if !hasArg(args, "--target-colorspace-hint=yes") {
 		t.Error("hdr_passthrough should emit --target-colorspace-hint=yes")
@@ -171,11 +176,12 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// The pairing box needs a clean full screen with no on-screen controller, and
-// it must start even if the stored config would not autostart.
+// The pairing box needs a clean screen with no on-screen controller, and it
+// must start even if the stored config would not autostart. On a desktop it is
+// a window; DRM is always the full screen.
 func TestPairingLaunch(t *testing.T) {
 	hc := Pairing()
-	if !hc.Autostart || !hc.Graphics.Fullscreen || hc.Graphics.OSC {
+	if !hc.Autostart || hc.Graphics.OSC || hc.Graphics.Fullscreen != (hc.Graphics.Mode == ModeDRM) {
 		t.Errorf("pairing launch config = %+v", hc)
 	}
 	if hc.Graphics.Display != "" {

@@ -12,14 +12,15 @@ import (
 )
 
 // The agent's reserved ids on mpv's IPC. agentRequestID tags its own commands
-// (the overlay, standby and the test sound); pathObserverID is its observer of
-// mpv's path (and timeObserverID, in testsound.go, of the test sound's
-// position).
+// (the overlay, standby and the test sound); pathObserverID and loopObserverID
+// are its observers of mpv's path and loop-file (and timeObserverID, in
+// testsound.go, of the test sound's position).
 // Frames carrying them are not forwarded to the control client (see
 // control.fromMPV).
 const (
 	agentRequestID = 2_000_000_001
 	pathObserverID = 2_000_000_003
+	loopObserverID = 2_000_000_005
 )
 
 // card owns the agent's overlay on the player's screen: the pairing box while
@@ -133,6 +134,7 @@ func (c *card) choose() scene {
 		return c.confirm
 	case !c.s.standby.onStandby(): // Cinefin is showing something: keep off it
 		c.standbyWhenAway()
+		c.endHoldWhenAway()
 		return nil
 	case spec != nil && spec.ShowStatus:
 		return c.statusScene(spec)
@@ -151,9 +153,13 @@ func (c *card) pairingScene() scene {
 		expires: expires, reveal: loaded.Add(intro)}
 }
 
-// pairingNotice is the pairing box's extra line: on a player upgraded from a
-// 0.1 release with a config.toml, that the file is no longer used.
+// pairingNotice is the pairing box's extra line: that a Cinefin was refused
+// for its protocol (see protocol.go), else on a player upgraded from a 0.1
+// release with a config.toml, that the file is no longer used.
 func (c *card) pairingNotice() string {
+	if n := c.s.mismatchNotice(true); n != "" {
+		return n
+	}
 	if c.s.cfg.LegacyConfig == "" {
 		return ""
 	}

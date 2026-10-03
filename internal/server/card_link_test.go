@@ -25,34 +25,34 @@ func TestLinkWatchTransitions(t *testing.T) {
 	at := func(d time.Duration) time.Time { return start.Add(d) }
 
 	// Never connected since the agent started.
-	if sc := w.choose(false, start, at(29*time.Second), "10.0.0.5"); sc != nil {
+	if sc := w.choose(false, start, at(29*time.Second), "10.0.0.5", ""); sc != nil {
 		t.Fatalf("at 29 s: %v, want nothing", sc)
 	}
-	sc := w.choose(false, start, at(30*time.Second), "10.0.0.5")
+	sc := w.choose(false, start, at(30*time.Second), "10.0.0.5", "")
 	if n, ok := sc.(linkNoticeScene); !ok || n.address != "10.0.0.5" {
 		t.Fatalf("at 30 s: %v, want the notice", sc)
 	}
-	w.choose(false, start, at(40*time.Second), "10.0.0.5")
+	w.choose(false, start, at(40*time.Second), "10.0.0.5", "")
 
 	// Cinefin attaches at 40.5 s: the toast, until 3 s later.
 	attach := at(40500 * time.Millisecond)
-	if sc := w.choose(true, attach, attach, ""); sc == nil || sc.key() != "link-online" {
+	if sc := w.choose(true, attach, attach, "", ""); sc == nil || sc.key() != "link-online" {
 		t.Fatalf("on attach: %v, want the toast", sc)
 	}
-	if sc := w.choose(true, attach, attach.Add(2*time.Second), ""); sc == nil || sc.key() != "link-online" {
+	if sc := w.choose(true, attach, attach.Add(2*time.Second), "", ""); sc == nil || sc.key() != "link-online" {
 		t.Fatalf("2 s after attach: %v, want the toast", sc)
 	}
-	if sc := w.choose(true, attach, attach.Add(3*time.Second), ""); sc != nil {
+	if sc := w.choose(true, attach, attach.Add(3*time.Second), "", ""); sc != nil {
 		t.Fatalf("3 s after attach: %v, want nothing", sc)
 	}
 
 	// A drop shorter than 30 s shows nothing, and so does the reconnect.
 	drop := at(60 * time.Second)
-	if sc := w.choose(false, drop, drop.Add(10*time.Second), ""); sc != nil {
+	if sc := w.choose(false, drop, drop.Add(10*time.Second), "", ""); sc != nil {
 		t.Fatalf("10 s into a drop: %v, want nothing", sc)
 	}
 	back := drop.Add(12 * time.Second)
-	if sc := w.choose(true, back, back, ""); sc != nil {
+	if sc := w.choose(true, back, back, "", ""); sc != nil {
 		t.Fatalf("reconnect after a short drop: %v, want nothing", sc)
 	}
 }
@@ -62,15 +62,15 @@ func TestLinkWatchTransitions(t *testing.T) {
 func TestLinkNoToastAfterStaleNotice(t *testing.T) {
 	var w linkWatch
 	start := time.Now()
-	w.choose(false, start, start.Add(31*time.Second), "")
+	w.choose(false, start, start.Add(31*time.Second), "", "")
 	attach := start.Add(5 * time.Minute)
-	if sc := w.choose(true, attach, attach, ""); sc != nil {
+	if sc := w.choose(true, attach, attach, "", ""); sc != nil {
 		t.Fatalf("toast after a stale notice: %v", sc)
 	}
 }
 
 func TestLinkNoticeText(t *testing.T) {
-	got := linkNoticeText("192.168.1.20")
+	got := linkNoticeText("192.168.1.20", "")
 	for _, want := range []string{
 		"Can't reach Cinefin at 192.168.1.20",
 		"Retrying every few seconds.",
@@ -80,7 +80,7 @@ func TestLinkNoticeText(t *testing.T) {
 			t.Errorf("notice lacks %q:\n%s", want, got)
 		}
 	}
-	if got := linkNoticeText(""); !strings.Contains(got, "}Can't reach Cinefin\n") {
+	if got := linkNoticeText("", ""); !strings.Contains(got, "}Can't reach Cinefin\n") {
 		t.Errorf("notice without an address:\n%s", got)
 	}
 }
@@ -144,7 +144,7 @@ func TestLinkNoticeEntersStandbyWhenIdle(t *testing.T) {
 	srv.standby.observed(nil)
 	srv.card.refresh()
 	path := filepath.Join(srv.cfg.StateDir, ident.FileName)
-	want := string(agentCommand("loadfile", path, "replace", -1, ident.Options))
+	want := string(agentCommand("loadfile", path, "replace", -1, titled(ident.Options, identTitle)))
 	if got := fp.frames(); len(got) != 2 || got[0] != want {
 		t.Fatalf("frames after idle: %v\nwant %s then unpause", got, want)
 	}
@@ -161,6 +161,81 @@ func TestLinkNoticeEntersStandbyWhenIdle(t *testing.T) {
 	srv.card.refresh()
 	if last := fp.frames()[len(fp.frames())-1]; !strings.Contains(last, "Can't reach Cinefin at 10.0.0.5") {
 		t.Fatalf("no notice on standby: %s", last)
+	}
+}
+
+// endHoldFrame is the agent's command that ends a command hold.
+var endHoldFrame = string(agentCommand("set_property", "loop-file", "no"))
+
+// endHolds counts the hold endings among the frames sent from n on.
+func endHolds(fp *fakePlayer, n int) int {
+	c := 0
+	for _, f := range fp.frames()[n:] {
+		if f == endHoldFrame {
+			c++
+		}
+	}
+	return c
+}
+
+// holdServer is pairedLinkServer with mpv playing a hold's black clip, its
+// loop-file reported as loop, and the link down for down.
+func holdServer(t *testing.T, loop string, down time.Duration) (*Server, *fakePlayer) {
+	t.Helper()
+	srv, fp := pairedLinkServer(t)
+	srv.control.mu.Lock()
+	srv.control.changed = time.Now().Add(-down)
+	srv.control.mu.Unlock()
+	srv.standby.observed(json.RawMessage(`"http://cinefin/stream/system/black/"`))
+	srv.control.fromMPV([]byte(`{"event":"property-change","id":2000000005,"name":"loop-file","data":` + loop + `}`))
+	return srv, fp
+}
+
+// With Cinefin away for 30 s the agent ends a command hold once, and tries
+// again only after linkStandbyRetry while mpv still reports the loop.
+func TestEndHoldWhenAway(t *testing.T) {
+	srv, fp := holdServer(t, `"inf"`, 31*time.Second)
+	srv.card.refresh()
+	if n := endHolds(fp, 0); n != 1 {
+		t.Fatalf("hold endings = %d, want 1", n)
+	}
+	n := len(fp.frames())
+	srv.card.refresh()
+	if got := endHolds(fp, n); got != 0 {
+		t.Fatalf("ended the hold again at once")
+	}
+	srv.control.fromMPV([]byte(`{"event":"property-change","id":2000000005,"name":"loop-file","data":false}`))
+	if srv.standby.loopingForever() {
+		t.Error("still looping after loop-file=no")
+	}
+}
+
+// The hold is left alone while Cinefin is attached, before the grace, and
+// when loop-file is not inf.
+func TestEndHoldLeftAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name, loop string
+		down       time.Duration
+		attach     bool
+	}{
+		{"attached", `"inf"`, 31 * time.Second, true},
+		{"before the grace", `"inf"`, 29 * time.Second, false},
+		{"loop-file no", `false`, 31 * time.Second, false},
+		{"loop-file count", `3`, 31 * time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, fp := holdServer(t, tc.loop, tc.down)
+			if tc.attach {
+				srv.control.attach(func([]byte) {}, nil)
+				srv.control.mu.Lock()
+				srv.control.changed = time.Now().Add(-tc.down)
+				srv.control.mu.Unlock()
+			}
+			srv.card.refresh()
+			if n := endHolds(fp, 0); n != 0 {
+				t.Fatalf("hold endings = %d, want 0", n)
+			}
+		})
 	}
 }
 

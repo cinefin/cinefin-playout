@@ -89,15 +89,14 @@ For operators who run the agent interactively rather than as a headless service,
 a `-tags ui` build (`internal/ui`) adds one native surface:
 
 - **System tray** (systray): a menu with live status (player / Cinefin), the
-  pairing code while unpaired, copy address, start/stop/restart, "Forget
-  Cinefin" and **Open status page…**. It drives the running agent
+  pairing code while unpaired, the agent version, copy address,
+  start/stop/restart and "Forget Cinefin". It drives the running agent
   **in-process** (injected `TrayDeps` closures), so it holds no privileged URL.
   It is shown when the agent runs in a desktop session (`internal/session`:
   `DISPLAY`/`WAYLAND_DISPLAY` on Linux, not a Windows service); a service, a box
-  with no display, `--no-ui` or a non-ui build stays headless. "Open status
-  page…" opens the agent's own **loopback-only `/ui` page**
-  (`internal/server/panel.go`, an embedded HTML status page) in the default
-  browser, so there is no embedded webview to build or ship.
+  with no display, `--no-ui` or a non-ui build stays headless. There is no
+  web page of its own: everything the operator needs is on the tray, the TV
+  and in Cinefin.
 
 systray talks to the desktop over D-Bus (Linux) or GDI (Windows) — both CGO-free
 — so the `-tags ui` build still cross-compiles with CGO off there. Only macOS's
@@ -119,8 +118,8 @@ encryption, if wanted, is a reverse proxy's job. JSON in/out.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health` | Liveness + version + os/arch + id/name/paired + `protocol` (unauth). |
-| POST | `/pair` | `{"code"}` → `{"token", "id", "name", "protocol", …}`; 403 wrong code, 429 rate-limited, 409 already paired (unauth). |
+| GET | `/health` | Liveness + version + os/arch + id/name/paired + `protocol`/`min_protocol` (unauth, any protocol). |
+| POST | `/pair` | `{"code"}` → `{"token", "id", "name", "protocol", "min_protocol", …}`; 403 wrong code, 429 rate-limited, 409 already paired (unauth). |
 | POST | `/unpair` | Forget the token and launch config; the player restarts onto the pairing box. |
 | GET | `/status` | Agent + mpv process + control-link + standby status, and `test_card` / `test_sound` (below). |
 | WS | `/ws/control` | Duplex JSON-IPC relay (above). |
@@ -132,7 +131,7 @@ encryption, if wanted, is a reverse proxy's job. JSON in/out.
 | POST | `/testsound` | Play the test sound (below); 409 off standby with the test card off, or while one plays; 503 when mpv is not running. |
 | GET | `/hardware` | Enumerated audio devices, DRM connectors, screens, mpv version/features. |
 | POST | `/mpv/start` \| `/mpv/stop` \| `/mpv/restart` | Process lifecycle; launch args assembled from `/hostconfig`. |
-| GET | `/ui`, `/ui/state`, `/ui/player/*`, `/ui/unpair` | Status page + state/actions. **Loopback-only** (no token); opened in the browser by the `-tags ui` tray; `/ui/unpair` also serves `cinefin-playout reset`. |
+| POST | `/local/unpair` | Forget the pairing. **Loopback-only** (no token); used by `cinefin-playout reset`. |
 
 ## Pairing
 
@@ -166,8 +165,7 @@ A player is either **unpaired** (no token in its state file) or **paired**.
   once when the code rotates or the pairing changes, and after mpv restarts
   (a restart reloads the ident, so the box waits for the intro again). The
   agent's own replies (`request_id` 2000000001) are not relayed to Cinefin.
-  The code is also on the tray, the status page and, for a headless box, the
-  log.
+  The code is also on the tray and, for a headless box, in the log.
 - **The code** (`internal/pairing`) is six digits. It rotates every 5 minutes,
   after each wrong attempt and once used; attempts are limited to one a second,
   and five wrong in a row lock pairing for a minute.
@@ -181,7 +179,7 @@ A player is either **unpaired** (no token in its state file) or **paired**.
   From then on the player
   launches from the launch config Cinefin sets.
 - **Unpairing** (`POST /unpair` from Cinefin when the host is deleted, the tray's
-  "Forget Cinefin", the status page, or `cinefin-playout reset`) clears the token,
+  "Forget Cinefin", or `cinefin-playout reset`) clears the token,
   launch config and standby spec, drops the control link and restarts mpv onto a
   new code.
 - **Discovery** (`internal/discovery`): the agent registers
@@ -235,7 +233,10 @@ survives a reboot). When Cinefin reconnects the notice gives way to a
 `linkNoticeBox` and `linkToastBox` constants there. A player that is not on
 standby shows neither; if Cinefin has been away for 30 s and mpv has nothing
 loaded, the agent puts it on standby, trying again at most every 10 s should
-the load fail.
+the load fail. If mpv is instead holding a command (Cinefin loops its black
+clip with `loop-file=inf`; the agent observes `loop-file`), the agent sets
+`loop-file` to `no`, so the clip plays out and the rest of the programme plays
+on by itself.
 
 `/hardware` is what lets the Cinefin UI show **dropdowns of real devices**
 instead of hand-typed strings:
@@ -328,8 +329,37 @@ replies to request id 2000000001 and the test sound's observer 2000000004
 The agent is on standby when `path` is the file it last loaded for standby,
 and idle when there is no `path`.
 
-`/health` and the `/pair` reply carry `"protocol": 2`, so Cinefin can tell a
-player that owns standby from an older one.
+## Protocol
+
+The protocol is the version of the API Cinefin speaks to the player
+(`internal/server/protocol.go`). Version numbers are not compared: Cinefin
+and the player are released separately.
+
+- The player serves a range, `min_protocol` to `protocol` (both 2 today), and
+  reports both from `/health` and the `/pair` reply.
+- Cinefin sends the one protocol it speaks in a `Cinefin-Protocol` header on
+  every request and on the WebSocket dial. A request without it is from a
+  Cinefin before v0.3.0, which counts as protocol 1.
+- Outside the range, the player answers `426` with `{"error", "protocol",
+  "min_protocol"}`, where `error` says which side to update. This runs before
+  the token check, so a Cinefin that can no longer authenticate still gets the
+  reason. `/health` and `/local/*` are exempt.
+- When the request looks like Cinefin (it sent the header or a token), the TV
+  says the same for five minutes: on the pairing box, under "Can't reach
+  Cinefin", or as the status line's state. Pairing or a control link from a
+  Cinefin in range clears it.
+- Cinefin checks the same range from `/health` and `/pair`, so it can say
+  "Update the player" or "Update Cinefin" before anything fails.
+
+To change it: raise `protocol` when Cinefin is to rely on something new in the
+player (and raise Cinefin's to match). Raise `min_protocol`, and `minCinefin`
+with it, when removing something an older Cinefin uses. Additions Cinefin does
+not rely on need no change.
+
+| Protocol | Meaning |
+| -------- | ------- |
+| 1 | Cinefin before v0.3.0 (no header). Not served. |
+| 2 | Pairing by code; the player owns standby. Cinefin v0.3.0, cinefin-playout v0.2.0. |
 
 ## Screen and sound check
 

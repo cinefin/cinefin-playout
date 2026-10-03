@@ -10,10 +10,29 @@ import (
 	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 )
 
-// handleGetHostConfig returns the launch config (autostart + graphics + audio):
-// the one Cinefin last set, or this machine's preset defaults.
-func (s *Server) handleGetHostConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.state.Launch())
+// handleGetHostConfig returns the launch config (autostart + graphics + audio)
+// the player starts from: the one Cinefin last set, or this machine's preset
+// defaults with any --display/--mode applied. Cinefin saves the whole config
+// back, so this must be what is on screen, or the first save would move the
+// player to another output.
+func (s *Server) handleGetHostConfig(w http.ResponseWriter, r *http.Request) {
+	hc := s.state.Launch()
+	if s.launch != nil {
+		hc = s.launch()
+	}
+	// A desktop screen picked by name (--display HDMI-A-1) is also reported by
+	// index, which is what Cinefin edits and sends back.
+	if g := &hc.Graphics; g.Mode != hostconfig.ModeDRM && g.ScreenName != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		for _, sc := range hardware.Screens(ctx) {
+			if sc.Name == g.ScreenName {
+				g.Screen = sc.Index
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, hc)
 }
 
 // handlePutHostConfig replaces the whole launch config (autostart + graphics +

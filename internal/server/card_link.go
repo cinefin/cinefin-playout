@@ -14,13 +14,15 @@ import (
 // in its own way (card_status.go). When Cinefin connects again after the
 // notice was showing, a "back online" toast shows for linkToastFor. A player
 // that is not on standby shows neither; if Cinefin is away for linkGrace and
-// mpv has nothing loaded, the agent puts it on standby.
+// mpv has nothing loaded, the agent puts it on standby, and if mpv is looping
+// a command hold, the agent ends the loop so the programme plays on.
 const (
 	linkGrace     = 30 * time.Second
 	linkToastFor  = 3 * time.Second
 	linkToastFade = 300 * time.Millisecond
 	// linkStandbyRetry is how long the agent waits before trying standby
-	// again, should mpv still have nothing loaded (the ident failed to load).
+	// again, should mpv still have nothing loaded (the ident failed to load),
+	// or before ending a hold again.
 	linkStandbyRetry = 10 * time.Second
 	// linkToastWindow is how recently the notice must have been on screen when
 	// Cinefin attaches for the toast to show. The card redraws a static scene
@@ -33,16 +35,17 @@ type linkWatch struct {
 	noticeAt  time.Time // when the notice was last chosen
 	toastAt   time.Time // when the "back online" toast started
 	standbyAt time.Time // when standbyWhenAway last put mpv on standby
+	holdAt    time.Time // when endHoldWhenAway last ended a hold
 }
 
 // choose picks the link scene from the control link's state at now.
-func (w *linkWatch) choose(connected bool, since, now time.Time, address string) scene {
+func (w *linkWatch) choose(connected bool, since, now time.Time, address, detail string) scene {
 	if !connected {
 		if now.Sub(since) < linkGrace {
 			return nil
 		}
 		w.noticeAt = now
-		return linkNoticeScene{address: address}
+		return linkNoticeScene{address: address, detail: detail}
 	}
 	// Connected since `since`: toast if the notice was up until then.
 	if !w.noticeAt.IsZero() && since.Sub(w.noticeAt) <= linkToastWindow {
@@ -61,7 +64,7 @@ func (w *linkWatch) choose(connected bool, since, now time.Time, address string)
 // holds c.mu.
 func (c *card) linkScene() scene {
 	connected, since := c.s.control.link()
-	return c.link.choose(connected, since, time.Now(), c.s.state.CinefinAddress())
+	return c.link.choose(connected, since, time.Now(), c.s.state.CinefinAddress(), c.s.mismatchNotice(false))
 }
 
 // standbyWhenAway puts mpv on standby when it has nothing loaded and Cinefin
@@ -75,6 +78,24 @@ func (c *card) standbyWhenAway() {
 	}
 	c.link.standbyAt = now
 	c.s.enterStandby()
+}
+
+// endHoldWhenAway ends a command hold when Cinefin has been away for
+// linkGrace. Cinefin holds on a black clip with loop-file=inf until the
+// command finishes; with the loop off the clip plays out and mpv moves on
+// through the programme by itself. Caller holds c.mu.
+func (c *card) endHoldWhenAway() {
+	connected, since := c.s.control.link()
+	now := time.Now()
+	if connected || now.Sub(since) < linkGrace || !c.s.standby.loopingForever() || now.Sub(c.link.holdAt) < linkStandbyRetry {
+		return
+	}
+	c.link.holdAt = now
+	if err := c.s.backend.Send(agentCommand("set_property", "loop-file", "no")); err != nil {
+		c.s.log.Printf("link: end the hold: %v", err)
+		return
+	}
+	c.s.log.Printf("link: Cinefin is away, ending the hold")
 }
 
 // linkBox is where a notice box sits on the 1280x720 canvas. The content area
@@ -110,28 +131,33 @@ const (
 )
 
 // linkNoticeScene is the offline notice. address is Cinefin's last known
-// address, "" when none is known.
-type linkNoticeScene struct{ address string }
+// address, "" when none is known; detail, when set, says why (a protocol
+// mismatch) in place of "Retrying every few seconds.".
+type linkNoticeScene struct{ address, detail string }
 
 func (linkNoticeScene) key() string { return "link-offline" }
 
 func (n linkNoticeScene) frame(time.Duration) (string, time.Duration, bool) {
-	return linkNoticeText(n.address), idleRedraw, false
+	return linkNoticeText(n.address, n.detail), idleRedraw, false
 }
 
 // linkNoticeText lays out the offline notice as ASS events.
-func linkNoticeText(address string) string {
+func linkNoticeText(address, detail string) string {
 	b := linkNoticeBox
 	title := "Can't reach Cinefin"
 	if address != "" {
 		title += " at " + assText(address)
+	}
+	sub := "Retrying every few seconds."
+	if detail != "" {
+		sub = assText(detail)
 	}
 	top := b.top + b.padY
 	ev := linkPanel(b, linkNoticeFill, linkNoticeLine, 1)
 	ev = append(ev, linkWarningIcon(b.left+b.padX, top+(b.content-b.icon)/2, 1)...)
 	ev = append(ev,
 		linkTextEvent(b.textX(), top+13, 22, `\b500`, linkWhite, 0, title),
-		linkTextEvent(b.textX(), top+b.content-10, 16, "", linkNoticeSub, 0, "Retrying every few seconds."),
+		linkTextEvent(b.textX(), top+b.content-10, 16, "", linkNoticeSub, 0, sub),
 	)
 	return strings.Join(ev, "\n")
 }

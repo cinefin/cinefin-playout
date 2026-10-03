@@ -1,15 +1,20 @@
 # cinefin-playout task runner. Same verbs as cinefin's Makefile so both repos
-# drive identically: setup / lint / format / test / build / check / release.
+# drive alike: setup / lint / format / test / build / check. Releases are cut
+# by tagging the public GitHub repo (see scripts/mirror/README.md).
 #
 # Everything is pure Go with CGO off. The macOS tray needs cgo (Cocoa) and is
-# built on a Mac by hand (scripts/build-macos-app.sh), so it is not part of the
-# cross-compile gate. CI installs Go, then runs `make check` — the same steps you
+# built on a Mac by hand (`make macos`), so it is not part of the cross-compile
+# gate. CI installs Go, then runs `make check` — the same steps you
 # run locally.
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format build test check cross release clean sync-ident
+.PHONY: help setup lint format build macos test check cross clean sync-ident
 
 BIN := cinefin-playout
 PKG := ./cmd/cinefin-playout
+
+# The version comes from git, as in the release builds; "dev" outside a checkout.
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X $(shell go list -m)/internal/version.Version=$(VERSION)
 
 # Cross-compile gate (compile-time check for the os-tagged files: unix sockets vs
 # named pipes). The service variant covers every OS/arch; the desktop (-tags ui)
@@ -34,7 +39,10 @@ format: ## gofmt -w the whole tree
 	gofmt -w .
 
 build: ## Build the agent for the host (-tags ui) -> ./$(BIN)
-	CGO_ENABLED=0 go build -tags ui -o $(BIN) $(PKG)
+	CGO_ENABLED=0 go build -tags ui -ldflags "$(LDFLAGS)" -o $(BIN) $(PKG)
+
+macos: ## Build the self-contained macOS .app (Mac only; needs brew mpv) -> dist/
+	scripts/build-macos-app.sh
 
 test: ## Run the Go test suite
 	go test ./...
@@ -50,9 +58,6 @@ cross: ## Cross-compile every release target, both variants (compile gate)
 	done
 
 check: lint test cross ## Everything CI runs: lint + tests + cross-compile
-
-release: ## Tag + push a release (private/Gitea side): make release VERSION=vX.Y.Z
-	scripts/release.sh $(VERSION)
 
 sync-ident: ## Refresh the bundled System Ident from ../cinefin
 	cp ../cinefin/backend/cinefin/assets/system/ident.mp4 internal/ident/ident.mp4

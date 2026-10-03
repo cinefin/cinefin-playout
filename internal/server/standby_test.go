@@ -168,7 +168,7 @@ func TestPostStandbyLoadsTheIdent(t *testing.T) {
 		t.Fatalf("POST /standby: %d", code)
 	}
 	want := []string{
-		string(agentCommand("loadfile", bundled, "replace", -1, ident.Options)),
+		string(agentCommand("loadfile", bundled, "replace", -1, titled(ident.Options, identTitle))),
 		`{"command":["set_property","pause",false],"request_id":2000000001}`,
 	}
 	if got := fp.frames()[n:]; strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -182,7 +182,7 @@ func TestPostStandbyLoadsTheIdent(t *testing.T) {
 	n = len(fp.frames())
 	call("POST", "/standby", nil)
 	cached := filepath.Join(srv.cfg.StateDir, identDir, sum(clip)+".mp4")
-	if got := fp.frames()[n]; got != string(agentCommand("loadfile", cached, "replace", -1, "end=4,keep-open=always")) {
+	if got := fp.frames()[n]; got != string(agentCommand("loadfile", cached, "replace", -1, titled("end=4,keep-open=always", identTitle))) {
 		t.Fatalf("with spec: sent %s", got)
 	}
 
@@ -197,15 +197,17 @@ func TestPostStandbyLoadsTheIdent(t *testing.T) {
 	}
 }
 
-// Each time mpv comes up the agent observes its path and puts it on standby.
+// Each time mpv comes up the agent observes its path and loop-file and puts
+// it on standby.
 func TestMPVConnectEntersStandby(t *testing.T) {
 	srv, fp, _ := pairedStandbyServer(t)
 	srv.standby.observed(json.RawMessage(`"/old.mkv"`))
 	n := len(fp.frames())
 	srv.mpvConnected(true)
 	got := fp.frames()[n:]
-	if len(got) != 3 || got[0] != `{"command":["observe_property",2000000003,"path"],"request_id":2000000001}` ||
-		!strings.Contains(got[1], `"loadfile"`) {
+	if len(got) != 4 || got[0] != `{"command":["observe_property",2000000003,"path"],"request_id":2000000001}` ||
+		got[1] != `{"command":["observe_property",2000000005,"loop-file"],"request_id":2000000001}` ||
+		!strings.Contains(got[2], `"loadfile"`) {
 		t.Fatalf("on connect: %v", got)
 	}
 	if !srv.standby.idle() {
@@ -238,7 +240,7 @@ func TestStandbySwitchesToAnIdentDownloadedBeforeMPVReports(t *testing.T) {
 	}))
 	t.Cleanup(clips.Close)
 	cached := filepath.Join(srv.cfg.StateDir, identDir, sum(clip)+".mp4")
-	loadCached := string(agentCommand("loadfile", cached, "replace", -1, ""))
+	loadCached := string(agentCommand("loadfile", cached, "replace", -1, titled("", identTitle)))
 	// The switch follows the end of the download, so wait for it.
 	loadedCached := func(from int) bool {
 		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {

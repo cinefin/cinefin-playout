@@ -3,8 +3,8 @@
 // It exposes /health and /pair (unauth), /status, /ws/control, /hostconfig,
 // /standby, /testcard, /testsound, /hardware, /mpv/* and /unpair (all auth):
 // pairing, the control bridge, host config, standby, the screen and sound
-// check, and process lifecycle. There is also a loopback-only /ui status page (see
-// panel.go). Bearer-token auth is a constant-time compare against the token the
+// check, and process lifecycle. POST /local/unpair is loopback-only, for
+// `cinefin-playout reset` (see local.go). Bearer-token auth is a constant-time compare against the token the
 // agent issued when Cinefin paired (see pair.go); an unpaired agent has no token
 // and refuses every authenticated request.
 package server
@@ -25,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/cinefin/cinefin-playout/internal/config"
+	"github.com/cinefin/cinefin-playout/internal/hostconfig"
 	"github.com/cinefin/cinefin-playout/internal/pairing"
 	"github.com/cinefin/cinefin-playout/internal/player"
 	"github.com/cinefin/cinefin-playout/internal/state"
@@ -52,6 +53,8 @@ type Server struct {
 	log     *log.Logger
 
 	onPairing func(paired bool)
+	launch    func() hostconfig.HostConfig
+	mismatch  protocolMismatch // the last Cinefin refused for its protocol
 }
 
 // New builds a Server. st is the agent's persistent state (token + launch
@@ -69,11 +72,17 @@ func New(cfg config.Config, id Identity, st *state.Store, codes *pairing.Codes, 
 	s.card = newCard(s)
 	s.control.onChange = s.card.wake
 	s.control.onPath = s.pathChanged
+	s.control.onLoop = s.standby.observedLoop
 	s.control.onTime = s.toneTime
 	backend.OnMessage(s.control.fromMPV)
 	backend.OnMPVConnect(s.mpvConnected)
 	return s
 }
+
+// UseLaunchConfig sets where GET /hostconfig reads the launch config: the same
+// function the player launches from, so start-up flags such as --display show
+// in Cinefin until it sets a config of its own. Call before Run.
+func (s *Server) UseLaunchConfig(fn func() hostconfig.HostConfig) { s.launch = fn }
 
 // OnPairingChange registers fn, called after the player is paired or unpaired.
 // Call before Run.
@@ -83,7 +92,7 @@ func (s *Server) OnPairingChange(fn func(paired bool)) { s.onPairing = fn }
 func (s *Server) Paired() bool { return s.state.Paired() }
 
 // Address is the URL Cinefin reaches this player at, as shown on the pairing
-// card and the status page.
+// card and the tray.
 func (s *Server) Address() string { return s.pairingAddress() }
 
 // ControlConnected reports whether a /ws/control client is attached (used by the
@@ -110,9 +119,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /mpv/start", s.auth(http.HandlerFunc(s.handleMPVStart)))
 	mux.Handle("POST /mpv/stop", s.auth(http.HandlerFunc(s.handleMPVStop)))
 	mux.Handle("POST /mpv/restart", s.auth(http.HandlerFunc(s.handleMPVRestart)))
-	// The loopback-only /ui status page (opened in the browser from the tray).
-	s.registerPanel(mux)
-	return mux
+	s.registerLocal(mux)
+	return s.protocolGate(mux)
 }
 
 // auth enforces the bearer token. With no token set, every request is refused.
@@ -146,20 +154,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"version":  version.Version,
-		"os":       runtime.GOOS,
-		"arch":     runtime.GOARCH,
-		"id":       s.id.ID,
-		"name":     s.id.Name,
-		"paired":   s.state.Paired(),
-		"protocol": protocolVersion,
+		"status":       "ok",
+		"version":      version.Version,
+		"os":           runtime.GOOS,
+		"arch":         runtime.GOARCH,
+		"id":           s.id.ID,
+		"name":         s.id.Name,
+		"paired":       s.state.Paired(),
+		"protocol":     protocolVersion,
+		"min_protocol": minProtocol,
 	})
 }
-
-// protocolVersion is the version of the API Cinefin speaks to the player,
-// reported by /health and /pair. 2: the player owns standby (/standby).
-const protocolVersion = 2
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -250,6 +255,7 @@ func (s *Server) serveControl(parent context.Context, conn *websocket.Conn, from
 	// websocket concurrently with the read loop.
 	out := make(chan []byte, 64)
 
+	s.mismatch.clear()
 	client := s.control.attach(func(frame []byte) {
 		select {
 		case out <- frame:

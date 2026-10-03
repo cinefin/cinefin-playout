@@ -5,12 +5,17 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"github.com/cinefin/cinefin-playout/internal/config"
 	"github.com/cinefin/cinefin-playout/internal/hostconfig"
+	"github.com/cinefin/cinefin-playout/internal/pairing"
+	"github.com/cinefin/cinefin-playout/internal/player"
 	"github.com/cinefin/cinefin-playout/internal/state"
 )
 
@@ -132,5 +137,42 @@ func TestHardwareEndpoint(t *testing.T) {
 		if _, ok := body[key]; !ok {
 			t.Errorf("hardware response missing %q", key)
 		}
+	}
+}
+
+// GET /hostconfig reports the config the player launches from, so a start-up
+// pick such as --display shows in Cinefin and survives its first save.
+func TestGetHostConfigReportsLaunchConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.IPCSocket = "/tmp/does-not-exist-x.sock"
+	cfg.StateDir = t.TempDir()
+	st, err := state.Open(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetToken("secret"); err != nil {
+		t.Fatal(err)
+	}
+	launch := func() hostconfig.HostConfig {
+		hc := st.Launch()
+		hc.Graphics.Mode = hostconfig.ModeDRM
+		hc.Graphics.DRMConnector = "HDMI-A-2"
+		hc.Graphics.DRMMode = "3840x2160@24"
+		return hc
+	}
+	backend := player.New(cfg, launch, log.New(io.Discard, "", 0))
+	srv := New(cfg, Identity{ID: "test-id", Name: "Test player"}, st, pairing.New(), backend, log.New(io.Discard, "", 0))
+	srv.UseLaunchConfig(launch)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp := do(t, "GET", ts.URL+"/hostconfig", nil)
+	defer resp.Body.Close()
+	var got hostconfig.HostConfig
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Graphics.DRMConnector != "HDMI-A-2" || got.Graphics.DRMMode != "3840x2160@24" {
+		t.Errorf("GET /hostconfig = %+v, want the launch config's connector and mode", got.Graphics)
 	}
 }

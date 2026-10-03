@@ -3,8 +3,8 @@
 //
 // It relays control over /ws/control, owns the host graphics/audio config and
 // hardware enumeration, and drives mpv as a supervised subprocess — see
-// docs/ARCHITECTURE.md. A -tags ui build also shows a system tray whose "control
-// panel" item opens the agent's loopback /ui page in the default browser.
+// docs/ARCHITECTURE.md. A -tags ui build also shows a system tray when someone is
+// logged in at a desktop.
 package main
 
 import (
@@ -151,6 +151,8 @@ func main() {
 	}
 	defer lock.Release()
 
+	logger.Printf("cinefin-playout %s %s/%s", version.Version, runtime.GOOS, runtime.GOARCH)
+
 	st, err := state.Open(cfg.StateDir)
 	if err != nil {
 		logger.Fatalf("state: %v", err)
@@ -195,7 +197,7 @@ func main() {
 	// launch config, so the pairing box can be drawn; a paired one uses the
 	// config Cinefin set.
 	var modeIgnored sync.Once
-	backend := player.New(cfg, func() hostconfig.HostConfig {
+	launchConfig := func() hostconfig.HostConfig {
 		hc := st.Launch()
 		if !st.Paired() {
 			hc = hostconfig.Pairing()
@@ -213,7 +215,8 @@ func main() {
 			}
 		}
 		return hc
-	}, logger)
+	}
+	backend := player.New(cfg, launchConfig, logger)
 
 	codes := pairing.New()
 	go codes.Run(ctx)
@@ -238,6 +241,7 @@ func main() {
 		}
 	}
 	codes.OnRotate(logCode)
+	srv.UseLaunchConfig(launchConfig)
 	srv.OnPairingChange(func(paired bool) {
 		adv.Update()
 		if !paired {
@@ -263,7 +267,7 @@ func main() {
 			}
 		}()
 		deps := ui.TrayDeps{
-			Port:             cfg.Port,
+			Version:          version.Version,
 			Address:          srv.Address,
 			Paired:           st.Paired,
 			Code:             func() string { c, _ := codes.Current(); return pairing.Format(c) },
@@ -298,7 +302,7 @@ func runReset(args []string) int {
 	port := fs.Int("port", config.Default().Port, "the running agent's port")
 	_ = fs.Parse(args)
 
-	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)) + "/ui/unpair"
+	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)) + "/local/unpair"
 	client := &http.Client{Timeout: 5 * time.Second}
 	if resp, err := client.Post(url, "application/json", nil); err == nil {
 		resp.Body.Close()
