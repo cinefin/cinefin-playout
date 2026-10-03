@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // control is the bridge between the /ws/control websocket and the local mpv IPC
@@ -18,11 +19,23 @@ import (
 // re-subscribes with the same ids, so mpv updates them in place rather than
 // accumulating duplicates. If a second client dials it simply displaces the
 // first (the old one is closed).
+//
+// It also keeps the link state the offline notice needs: when a client last
+// attached or detached (counted from the agent's start before the first one).
 type control struct {
 	mpv mpvLink
 
-	mu     sync.Mutex
-	client *ctlClient
+	// onChange, if set, is called after a client attaches or detaches (the
+	// card redraws). onPath and onTime, if set, receive the agent's own
+	// observations of mpv's path (see Server.pathChanged) and of the test
+	// sound's position (Server.toneTime). New sets all three.
+	onChange func()
+	onPath   func(data json.RawMessage)
+	onTime   func(data json.RawMessage)
+
+	mu      sync.Mutex
+	client  *ctlClient
+	changed time.Time // when client last changed between nil and set
 }
 
 // mpvLink is the slice of the player backend the control bridge needs.
@@ -38,7 +51,7 @@ type ctlClient struct {
 	close func()
 }
 
-func newControl(mpv mpvLink) *control { return &control{mpv: mpv} }
+func newControl(mpv mpvLink) *control { return &control{mpv: mpv, changed: time.Now()} }
 
 // attach registers the (single) websocket peer, displacing and closing any
 // previous one. The returned handle is passed back to detach.
@@ -47,10 +60,14 @@ func (c *control) attach(send func([]byte), close func()) *ctlClient {
 	c.mu.Lock()
 	prev := c.client
 	c.client = cl
+	if prev == nil {
+		c.changed = time.Now()
+	}
 	c.mu.Unlock()
 	if prev != nil && prev.close != nil {
 		prev.close()
 	}
+	c.notify()
 	return cl
 }
 
@@ -58,10 +75,21 @@ func (c *control) attach(send func([]byte), close func()) *ctlClient {
 // already displaced it).
 func (c *control) detach(cl *ctlClient) {
 	c.mu.Lock()
-	if c.client == cl {
+	gone := c.client == cl
+	if gone {
 		c.client = nil
+		c.changed = time.Now()
 	}
 	c.mu.Unlock()
+	if gone {
+		c.notify()
+	}
+}
+
+func (c *control) notify() {
+	if c.onChange != nil {
+		c.onChange()
+	}
 }
 
 // disconnect force-closes the current client. Called when mpv reconnects
@@ -83,6 +111,14 @@ func (c *control) connected() bool {
 	return c.client != nil
 }
 
+// link reports whether a control client is attached and since when that has
+// been so: the last attach, or the last detach (or the agent's start).
+func (c *control) link() (connected bool, since time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.client != nil, c.changed
+}
+
 // inbound forwards one raw client frame to mpv, or answers with a structured
 // error (so the client's pending command fails fast) when mpv is unreachable.
 func (c *control) inbound(raw []byte) {
@@ -95,16 +131,40 @@ func (c *control) inbound(raw []byte) {
 }
 
 // fromMPV forwards one raw mpv frame (reply or event) to the current client,
-// except replies to the agent's own commands (the pairing card).
+// except the agent's own traffic: replies to its commands (the overlay and
+// standby), and changes to the properties it observes, which go to onPath and
+// onTime.
 func (c *control) fromMPV(raw []byte) {
-	if string(requestID(raw)) == cardRequestIDJSON {
-		return
+	var f struct {
+		RequestID json.RawMessage `json:"request_id"`
+		Event     string          `json:"event"`
+		ID        json.RawMessage `json:"id"`
+		Data      json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(raw, &f) == nil {
+		switch {
+		case string(f.RequestID) == agentRequestIDJSON:
+			return
+		case f.Event == "property-change" && string(f.ID) == pathObserverIDJSON:
+			if c.onPath != nil {
+				c.onPath(f.Data)
+			}
+			return
+		case f.Event == "property-change" && string(f.ID) == timeObserverIDJSON:
+			if c.onTime != nil {
+				c.onTime(f.Data)
+			}
+			return
+		}
 	}
 	c.toClient(raw)
 }
 
-// cardRequestIDJSON is cardRequestID as it appears in a reply frame.
-var cardRequestIDJSON = strconv.Itoa(cardRequestID)
+// The agent's own ids as they appear in mpv's frames.
+var (
+	agentRequestIDJSON = strconv.Itoa(agentRequestID)
+	pathObserverIDJSON = strconv.Itoa(pathObserverID)
+)
 
 func (c *control) toClient(frame []byte) {
 	c.mu.Lock()

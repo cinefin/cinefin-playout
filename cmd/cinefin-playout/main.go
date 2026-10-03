@@ -12,14 +12,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,6 +53,10 @@ func main() {
 		displays    displayFlag
 		showVersion bool
 		noUI        bool
+
+		mode         string
+		listDisplays bool
+		legacyConfig string
 	)
 	hostname, _ := os.Hostname()
 	flag.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to listen on")
@@ -58,10 +67,16 @@ func main() {
 	flag.Var(&displays, "display", "where to show the player; repeatable. A display server (\":0\", \"wayland-1\") on Linux, or a screen: an index (\"1\") or an output name (\"HDMI-A-1\"). The screen applies until Cinefin sets one")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&noUI, "no-ui", false, "never show the tray icon (by default it is shown when there is a desktop session)")
+	flag.StringVar(&mode, "mode", "", "screen mode when mpv draws straight to the screen (DRM): WxH, WxH@Hz, preferred, highest or a mode index. Applies until Cinefin sets the launch config; ignored on a desktop")
+	flag.BoolVar(&listDisplays, "list-displays", false, "print the connectors and screens with their modes, then exit")
+	flag.StringVar(&cfg.MPVConfigFile, "mpv-config", "", "an extra mpv config file, read after the mpv.conf in <state-dir>/mpv")
+	// --config is what 0.1 releases took (a config.toml). It is accepted so an
+	// old service file still starts, and only warns; hidden from the usage.
+	flag.StringVar(&legacyConfig, "config", "", "")
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
 		fmt.Fprintf(out, "Usage:\n  cinefin-playout [flags]\n  cinefin-playout reset [--state-dir dir] [--port n]   forget the Cinefin pairing\n\nFlags:\n")
-		flag.PrintDefaults()
+		printDefaults(out, flag.CommandLine, "config")
 	}
 	flag.Parse()
 
@@ -71,6 +86,23 @@ func main() {
 	}
 	if name == "" {
 		name = "Cinefin player"
+	}
+	if mode != "" {
+		if err := hostconfig.ValidateDRMMode(mode); err != nil {
+			startupError("--mode: %v", err)
+		}
+	}
+	if cfg.MPVConfigFile != "" {
+		fi, err := os.Stat(cfg.MPVConfigFile)
+		if err == nil && fi.IsDir() {
+			err = errors.New("is a directory, not a file")
+		}
+		if err != nil {
+			startupError("--mpv-config %s: %v", cfg.MPVConfigFile, err)
+		}
+		if abs, err := filepath.Abs(cfg.MPVConfigFile); err == nil {
+			cfg.MPVConfigFile = abs
+		}
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
@@ -86,6 +118,27 @@ func main() {
 		} else {
 			screen = v
 		}
+	}
+
+	if listDisplays {
+		// On a Linux desktop the session's screens are listed too (what a
+		// --display index counts); without one they would repeat the connectors.
+		var screens []hardware.Screen
+		if runtime.GOOS != "linux" || session.Desktop() {
+			screens = hardware.Screens(context.Background())
+		}
+		hardware.WriteDisplays(os.Stdout, hardware.DRMConnectorList(""), screens)
+		return
+	}
+
+	// A 0.1 install: its service passes --config, or its config.toml is still
+	// in one of the old places. Neither is read any more.
+	cfg.LegacyConfig = legacyConfig
+	if cfg.LegacyConfig == "" {
+		cfg.LegacyConfig = config.FindLegacyConfig(config.LegacyConfigPaths())
+	}
+	if cfg.LegacyConfig != "" {
+		logger.Printf("%s: %s (remove --config from the service file and delete the file)", cfg.LegacyConfig, config.LegacyConfigNotice)
 	}
 
 	// One agent per machine: a second would fight the first for the screen,
@@ -117,6 +170,12 @@ func main() {
 		logger.Printf("mpv: %q not found yet (%v)", mpvBin, lerr)
 	}
 
+	// The player's own mpv config folder, used instead of ~/.config/mpv.
+	if err := os.MkdirAll(cfg.MPVConfigDir(), 0o755); err != nil {
+		logger.Printf("mpv config: %v", err)
+	}
+	logger.Printf("mpv config: %s", describeMPVConfig(cfg))
+
 	// Decide desktop vs headless once, up front: on Linux this also adopts the
 	// display sockets when the display variables are missing (tmux, ssh), so the
 	// tray and mpv find the display.
@@ -133,8 +192,9 @@ func main() {
 	// (Send/inbound frames), the lifecycle (start/stop/supervise) and hardware
 	// hotplug recovery, assembling launch options from the launch config, read on
 	// each (re)start. An unpaired player launches full screen with the pairing
-	// launch config, so the pairing card can be drawn; a paired one uses the
+	// launch config, so the pairing box can be drawn; a paired one uses the
 	// config Cinefin set.
+	var modeIgnored sync.Once
 	backend := player.New(cfg, func() hostconfig.HostConfig {
 		hc := st.Launch()
 		if !st.Paired() {
@@ -144,6 +204,12 @@ func main() {
 		if screen != "" && (!st.Paired() || !st.HasLaunch()) {
 			if err := hc.PickScreen(screen, hardware.ConnectedDRMConnectors()); err != nil {
 				logger.Printf("--display: %v; using the default screen", err)
+			}
+		}
+		// So does the --mode, when mpv draws straight to the screen.
+		if mode != "" && (!st.Paired() || !st.HasLaunch()) {
+			if err := hc.PickMode(mode); err != nil {
+				modeIgnored.Do(func() { logger.Printf("--mode %s: %v", mode, err) })
 			}
 		}
 		return hc
@@ -254,6 +320,40 @@ func runReset(args []string) int {
 	}
 	fmt.Printf("Forgot the Cinefin pairing in %s. The player shows a pairing code when it next starts.\n", st.Path())
 	return 0
+}
+
+// describeMPVConfig says which mpv config applies, for the startup log.
+func describeMPVConfig(cfg config.Config) string {
+	s := cfg.MPVConfigDir()
+	if cfg.HasMPVConf() {
+		s += " (with mpv.conf)"
+	} else {
+		s += " (no mpv.conf)"
+	}
+	if cfg.MPVConfigFile != "" {
+		s += ", then " + cfg.MPVConfigFile
+	}
+	return s
+}
+
+// startupError reports a bad flag value and exits, like a flag parse error.
+func startupError(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "cinefin-playout: "+format+"\n", args...)
+	os.Exit(2)
+}
+
+// printDefaults is from.PrintDefaults without the hidden flags.
+func printDefaults(out io.Writer, from *flag.FlagSet, hidden ...string) {
+	fs := flag.NewFlagSet("", flag.ContinueOnError)
+	fs.SetOutput(out)
+	from.VisitAll(func(f *flag.Flag) {
+		if slices.Contains(hidden, f.Name) {
+			return
+		}
+		fs.Var(f.Value, f.Name, f.Usage)
+		fs.Lookup(f.Name).DefValue = f.DefValue
+	})
+	fs.PrintDefaults()
 }
 
 // displayFlag collects repeated --display values.

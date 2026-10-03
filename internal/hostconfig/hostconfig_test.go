@@ -1,6 +1,8 @@
 package hostconfig
 
 import (
+	"errors"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -28,7 +30,7 @@ func argWithPrefix(args []string, prefix string) (string, bool) {
 
 func TestBuildMPVArgsEnforcedFlags(t *testing.T) {
 	hc := Preset("linux")
-	args := BuildMPVArgs(hc, "/tmp/scratch.sock")
+	args := BuildMPVArgs(hc, "/tmp/scratch.sock", MPVConfig{})
 	for _, must := range []string{
 		"--input-ipc-server=/tmp/scratch.sock",
 		"--idle=yes",
@@ -41,12 +43,13 @@ func TestBuildMPVArgsEnforcedFlags(t *testing.T) {
 }
 
 func TestBuildMPVArgsOSC(t *testing.T) {
-	hc := Preset("linux") // preset defaults OSC on
-	if !hasArg(BuildMPVArgs(hc, "/tmp/s.sock"), "--osc=yes") {
+	hc := Preset("linux")
+	hc.Graphics.OSC = true
+	if !hasArg(BuildMPVArgs(hc, "/tmp/s.sock", MPVConfig{}), "--osc=yes") {
 		t.Errorf("OSC-on preset should emit --osc=yes")
 	}
 	hc.Graphics.OSC = false
-	args := BuildMPVArgs(hc, "/tmp/s.sock")
+	args := BuildMPVArgs(hc, "/tmp/s.sock", MPVConfig{})
 	if !hasArg(args, "--osc=no") {
 		t.Errorf("OSC-off should emit --osc=no, got %v", args)
 	}
@@ -59,7 +62,7 @@ func TestBuildMPVArgsDesktopPreset(t *testing.T) {
 	hc := Preset("linux")
 	hc.Audio.Device = "alsa/hdmi:CARD=NVidia,DEV=0"
 	hc.Graphics.Screen = 1
-	args := BuildMPVArgs(hc, "/tmp/s.sock")
+	args := BuildMPVArgs(hc, "/tmp/s.sock", MPVConfig{})
 
 	want := map[string]string{
 		"--vo=":             "--vo=gpu-next",
@@ -90,7 +93,7 @@ func TestBuildMPVArgsDesktopPreset(t *testing.T) {
 func TestBuildMPVArgsDRMPreset(t *testing.T) {
 	hc := PresetDRM("HDMI-A-1")
 	hc.Graphics.DRMMode = "1920x1080@60"
-	args := BuildMPVArgs(hc, "/tmp/s.sock")
+	args := BuildMPVArgs(hc, "/tmp/s.sock", MPVConfig{})
 
 	if got, _ := argWithPrefix(args, "--gpu-api="); got != "--gpu-api=vulkan" {
 		t.Errorf("drm gpu-api = %q, want vulkan", got)
@@ -113,7 +116,7 @@ func TestBuildMPVArgsDRMPreset(t *testing.T) {
 
 func TestBuildMPVArgsWindowsPreset(t *testing.T) {
 	hc := Preset("windows")
-	args := BuildMPVArgs(hc, `\\.\pipe\mpv-x`)
+	args := BuildMPVArgs(hc, `\\.\pipe\mpv-x`, MPVConfig{})
 
 	if got, _ := argWithPrefix(args, "--gpu-api="); got != "--gpu-api=d3d11" {
 		t.Errorf("windows gpu-api = %q, want d3d11", got)
@@ -126,21 +129,13 @@ func TestBuildMPVArgsWindowsPreset(t *testing.T) {
 	}
 }
 
-func TestBuildMPVArgsSPDIFAndIdle(t *testing.T) {
+func TestBuildMPVArgsSPDIF(t *testing.T) {
 	hc := Preset("linux")
 	hc.Audio.SPDIFPassthrough = []string{"ac3", "eac3", "dts"}
-	hc.Graphics.IdleMedia = "/media/ident.mp4"
-	args := BuildMPVArgs(hc, "/tmp/s.sock")
+	args := BuildMPVArgs(hc, "/tmp/s.sock", MPVConfig{})
 
 	if got, _ := argWithPrefix(args, "--audio-spdif="); got != "--audio-spdif=ac3,eac3,dts" {
 		t.Errorf("audio-spdif = %q", got)
-	}
-	// idle media appended with --pause, and as the last positional.
-	if args[len(args)-1] != "/media/ident.mp4" {
-		t.Errorf("idle media should be last arg, got %q", args[len(args)-1])
-	}
-	if !hasArg(args, "--pause") {
-		t.Error("idle media should be preceded by --pause")
 	}
 }
 
@@ -176,11 +171,11 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// The pairing card needs a clean full screen: no on-screen controller and no
-// idle media, and it must start even if the stored config would not autostart.
+// The pairing box needs a clean full screen with no on-screen controller, and
+// it must start even if the stored config would not autostart.
 func TestPairingLaunch(t *testing.T) {
 	hc := Pairing()
-	if !hc.Autostart || !hc.Graphics.Fullscreen || hc.Graphics.OSC || hc.Graphics.IdleMedia != "" {
+	if !hc.Autostart || !hc.Graphics.Fullscreen || hc.Graphics.OSC {
 		t.Errorf("pairing launch config = %+v", hc)
 	}
 	if hc.Graphics.Display != "" {
@@ -196,7 +191,7 @@ func TestPickScreen(t *testing.T) {
 	if err := desktop.PickScreen("HDMI-A-1", nil); err != nil || desktop.Graphics.ScreenName != "HDMI-A-1" {
 		t.Fatalf("name: %+v err=%v", desktop.Graphics, err)
 	}
-	args := BuildMPVArgs(desktop, "/tmp/s")
+	args := BuildMPVArgs(desktop, "/tmp/s", MPVConfig{})
 	if !hasArg(args, "--screen-name=HDMI-A-1") || !hasArg(args, "--fs-screen-name=HDMI-A-1") {
 		t.Errorf("screen name not in args: %v", args)
 	}
@@ -210,5 +205,85 @@ func TestPickScreen(t *testing.T) {
 	}
 	if err := drm.PickScreen("5", []string{"DP-1"}); err == nil {
 		t.Error("drm index past the connected screens should fail")
+	}
+}
+
+// The on-screen controller is for someone at the screen with a mouse; a cinema
+// screen starts clean, so every preset leaves it off.
+func TestPresetsLeaveOSCOff(t *testing.T) {
+	for _, goos := range []string{"linux", "windows", "darwin"} {
+		if Preset(goos).Graphics.OSC {
+			t.Errorf("Preset(%q) turns the OSC on", goos)
+		}
+	}
+	if Detect().Graphics.OSC {
+		t.Error("Detect turns the OSC on")
+	}
+}
+
+func TestValidateDRMMode(t *testing.T) {
+	for _, ok := range []string{
+		"preferred", "highest", "0", "12",
+		"3840x2160", "1920x1080@60", "1920x1080@59.94",
+	} {
+		if err := ValidateDRMMode(ok); err != nil {
+			t.Errorf("ValidateDRMMode(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "-1", "best", "1920x", "x1080", "0x1080", "1920x0",
+		"1920X1080", "1920x1080@", "1920x1080@abc", "1920x1080@0",
+		"1920x1080@-60", "1920x1080@6e1", "1920x1080@inf", "1920x1080@60@60",
+		" 1920x1080", "HDMI-A-1",
+	} {
+		if err := ValidateDRMMode(bad); err == nil {
+			t.Errorf("ValidateDRMMode(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+func TestPickMode(t *testing.T) {
+	drm := PresetDRM("HDMI-A-1")
+	if err := drm.PickMode("3840x2160@23.976"); err != nil || drm.Graphics.DRMMode != "3840x2160@23.976" {
+		t.Fatalf("drm: mode=%q err=%v", drm.Graphics.DRMMode, err)
+	}
+	if !hasArg(BuildMPVArgs(drm, "/tmp/s", MPVConfig{}), "--drm-mode=3840x2160@23.976") {
+		t.Error("the picked mode is not in the args")
+	}
+
+	desktop := Preset("linux")
+	if err := desktop.PickMode("1920x1080"); !errors.Is(err, ErrModeIgnored) {
+		t.Errorf("desktop: err=%v, want ErrModeIgnored", err)
+	}
+	if desktop.Graphics.DRMMode != "" {
+		t.Errorf("desktop: DRMMode set to %q", desktop.Graphics.DRMMode)
+	}
+}
+
+func TestBuildMPVArgsMPVConfig(t *testing.T) {
+	hc := Preset("linux")
+	args := BuildMPVArgs(hc, "/tmp/s", MPVConfig{Dir: "/state/mpv", Include: "/etc/cinefin-playout/mpv.conf"})
+	// The config goes first: an --include is read where it stands, so every
+	// option after it (the enforced ones, the launch config) wins.
+	want := []string{
+		"--config-dir=/state/mpv",
+		"--load-scripts=no",
+		"--include=/etc/cinefin-playout/mpv.conf",
+		"--input-ipc-server=/tmp/s",
+	}
+	if !reflect.DeepEqual(args[:len(want)], want) {
+		t.Errorf("args start %v, want %v", args[:len(want)], want)
+	}
+
+	// No folder or file: mpv's own default folder, still no user scripts.
+	args = BuildMPVArgs(hc, "/tmp/s", MPVConfig{})
+	if args[0] != "--load-scripts=no" {
+		t.Errorf("args start %q, want --load-scripts=no", args[0])
+	}
+	if _, ok := argWithPrefix(args, "--config-dir"); ok {
+		t.Error("--config-dir without a folder")
+	}
+	if _, ok := argWithPrefix(args, "--include"); ok {
+		t.Error("--include without a file")
 	}
 }

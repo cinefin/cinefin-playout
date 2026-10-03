@@ -1,8 +1,9 @@
 // Package server is the agent's HTTP + WebSocket surface.
 //
 // It exposes /health and /pair (unauth), /status, /ws/control, /hostconfig,
-// /hardware, /mpv/* and /unpair (all auth) — pairing, the control bridge, host
-// config and process lifecycle — and a loopback-only /ui status page (see
+// /standby, /testcard, /testsound, /hardware, /mpv/* and /unpair (all auth):
+// pairing, the control bridge, host config, standby, the screen and sound
+// check, and process lifecycle. There is also a loopback-only /ui status page (see
 // panel.go). Bearer-token auth is a constant-time compare against the token the
 // agent issued when Cinefin paired (see pair.go); an unpaired agent has no token
 // and refuses every authenticated request.
@@ -46,6 +47,8 @@ type Server struct {
 	control *control
 	backend player.Backend
 	card    *card
+	standby standby
+	tone    testSound
 	log     *log.Logger
 
 	onPairing func(paired bool)
@@ -62,15 +65,13 @@ func New(cfg config.Config, id Identity, st *state.Store, codes *pairing.Codes, 
 		logger = log.Default()
 	}
 	s := &Server{cfg: cfg, id: id, state: st, codes: codes, control: newControl(backend), backend: backend, log: logger}
-	s.card = &card{s: s}
+	s.standby.stateDir = cfg.StateDir
+	s.card = newCard(s)
+	s.control.onChange = s.card.wake
+	s.control.onPath = s.pathChanged
+	s.control.onTime = s.toneTime
 	backend.OnMessage(s.control.fromMPV)
-	// mpv came back after a drop: drop the client so it re-subscribes against
-	// the fresh instance (which has none of its observers), and redraw the
-	// pairing card, which the fresh instance does not have either.
-	backend.OnMPVReconnect(func() {
-		s.control.disconnect()
-		s.card.forget()
-	})
+	backend.OnMPVConnect(s.mpvConnected)
 	return s
 }
 
@@ -99,10 +100,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /ws/control", s.auth(http.HandlerFunc(s.handleControl)))
 	mux.Handle("GET /hostconfig", s.auth(http.HandlerFunc(s.handleGetHostConfig)))
 	// The launch config (graphics/audio/autostart) is set by Cinefin and kept in
-	// the agent's state file. The narrower idle-media PUT rewrites only the
-	// Cinefin-owned cinema ident.
+	// the agent's state file.
 	mux.Handle("PUT /hostconfig", s.auth(http.HandlerFunc(s.handlePutHostConfig)))
-	mux.Handle("PUT /hostconfig/idle-media", s.auth(http.HandlerFunc(s.handlePutIdleMedia)))
+	mux.Handle("PUT /standby", s.auth(http.HandlerFunc(s.handlePutStandby)))
+	mux.Handle("POST /standby", s.auth(http.HandlerFunc(s.handleEnterStandby)))
+	mux.Handle("POST /testcard", s.auth(http.HandlerFunc(s.handleTestCard)))
+	mux.Handle("POST /testsound", s.auth(http.HandlerFunc(s.handleTestSound)))
 	mux.Handle("GET /hardware", s.auth(http.HandlerFunc(s.handleHardware)))
 	mux.Handle("POST /mpv/start", s.auth(http.HandlerFunc(s.handleMPVStart)))
 	mux.Handle("POST /mpv/stop", s.auth(http.HandlerFunc(s.handleMPVStop)))
@@ -143,15 +146,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": version.Version,
-		"os":      runtime.GOOS,
-		"arch":    runtime.GOARCH,
-		"id":      s.id.ID,
-		"name":    s.id.Name,
-		"paired":  s.state.Paired(),
+		"status":   "ok",
+		"version":  version.Version,
+		"os":       runtime.GOOS,
+		"arch":     runtime.GOARCH,
+		"id":       s.id.ID,
+		"name":     s.id.Name,
+		"paired":   s.state.Paired(),
+		"protocol": protocolVersion,
 	})
 }
+
+// protocolVersion is the version of the API Cinefin speaks to the player,
+// reported by /health and /pair. 2: the player owns standby (/standby).
+const protocolVersion = 2
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -187,7 +195,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"control": map[string]any{
 			"clients": boolToCount(s.control.connected()),
 		},
-		"mpv": mpvInfo,
+		"mpv":        mpvInfo,
+		"standby":    s.standbyStatus(),
+		"test_card":  s.testCardStatus(),
+		"test_sound": s.testSoundStatus(),
+		"mpv_config": map[string]any{
+			"dir":      s.cfg.MPVConfigDir(),
+			"mpv_conf": s.cfg.HasMPVConf(),
+			"file":     s.cfg.MPVConfigFile,
+		},
 	})
 }
 
@@ -201,12 +217,28 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Serve until the client goes away.
-	s.serveControl(r.Context(), conn)
+	s.serveControl(r.Context(), conn, remoteHost(r.RemoteAddr))
 }
 
-func (s *Server) serveControl(parent context.Context, conn *websocket.Conn) {
+// The control link's keepalive: the agent pings the client every pingInterval
+// and drops it when a pong does not arrive within pingTimeout, so a dead link
+// is noticed in seconds rather than hanging until a command times out. The
+// client pings too; coder/websocket answers those while the read loop runs.
+// Variables so tests can shorten them.
+var (
+	pingInterval = 15 * time.Second
+	pingTimeout  = 10 * time.Second
+)
+
+// serveControl runs one /ws/control client until it goes away. from is the
+// client's (Cinefin's) address, kept for the offline notice.
+func (s *Server) serveControl(parent context.Context, conn *websocket.Conn, from string) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+
+	if err := s.state.SetCinefinAddress(from); err != nil {
+		s.log.Printf("control: save Cinefin's address: %v", err)
+	}
 
 	// Lift the library's 32 KiB read limit: mpv command frames (an inline
 	// playlist, long streaming URLs) can exceed it, and hitting it closes the
@@ -246,6 +278,30 @@ func (s *Server) serveControl(parent context.Context, conn *websocket.Conn) {
 		}
 	}()
 
+	// Keepalive. Ping needs the read loop below running to see the pong.
+	interval, timeout := pingInterval, pingTimeout
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			pctx, pcancel := context.WithTimeout(ctx, timeout)
+			err := conn.Ping(pctx)
+			pcancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					s.log.Printf("control: %s stopped answering pings; dropping it", from)
+				}
+				cancel()
+				return
+			}
+		}
+	}()
+
 	// Read loop.
 	for {
 		typ, data, err := conn.Read(ctx)
@@ -274,6 +330,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	go s.card.run(ctx)
+	s.resumeStandby()
 
 	errc := make(chan error, 1)
 	go func() {

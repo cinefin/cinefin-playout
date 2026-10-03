@@ -16,8 +16,8 @@ func Banner(name, code, address string) []string {
 		"Player:   " + name,
 		"Address:  " + address,
 		"",
-		"In Cinefin, open Settings > Playout, choose this player",
-		"and enter the code. If it is not listed, add it by its",
+		"In Cinefin, go to Settings > Playout and enter",
+		"the code. Not listed? Add this player by its",
 		"address. The code changes every few minutes.",
 	}
 	width := 0

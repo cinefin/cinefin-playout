@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -190,18 +189,14 @@ func parseWlrHz(fields []string) float64 {
 func sysfsScreens(drmRoot string) []Screen {
 	var screens []Screen
 	idx := 0
-	for name, status := range DRMConnectorStatuses(drmRoot) {
-		if status != "connected" {
+	for _, c := range DRMConnectorList(drmRoot) {
+		if c.Status != "connected" {
 			continue
 		}
-		s := Screen{Index: idx, Name: name}
-		// The connector dir is "cardN-<name>"; find it to read its modes file.
-		if matches, _ := filepath.Glob(filepath.Join(drmRoot, "*-"+name)); len(matches) > 0 {
-			if data, err := os.ReadFile(filepath.Join(matches[0], "modes")); err == nil {
-				first := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)[0]
-				if w, h, ok := parseWxH(first); ok {
-					s.W, s.H = w, h
-				}
+		s := Screen{Index: idx, Name: c.Name}
+		if len(c.Modes) > 0 {
+			if w, h, ok := parseWxH(c.Modes[0]); ok {
+				s.W, s.H = w, h
 			}
 		}
 		screens = append(screens, s)

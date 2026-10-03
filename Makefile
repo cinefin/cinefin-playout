@@ -6,7 +6,7 @@
 # cross-compile gate. CI installs Go, then runs `make check` — the same steps you
 # run locally.
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format build test check cross release clean
+.PHONY: help setup lint format build test check cross release clean sync-ident
 
 BIN := cinefin-playout
 PKG := ./cmd/cinefin-playout
@@ -53,6 +53,9 @@ check: lint test cross ## Everything CI runs: lint + tests + cross-compile
 
 release: ## Tag + push a release (private/Gitea side): make release VERSION=vX.Y.Z
 	scripts/release.sh $(VERSION)
+
+sync-ident: ## Refresh the bundled System Ident from ../cinefin
+	cp ../cinefin/backend/cinefin/assets/system/ident.mp4 internal/ident/ident.mp4
 
 clean: ## Remove build artifacts
 	rm -rf build dist $(BIN) $(BIN).exe

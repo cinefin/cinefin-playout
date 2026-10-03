@@ -101,3 +101,57 @@ func TestResetKeepsID(t *testing.T) {
 		t.Errorf("ID changed across Reset: %q -> %q", id, id2)
 	}
 }
+
+// Cinefin's address survives a reload and is forgotten on Reset.
+func TestCinefinAddressRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CinefinAddress() != "" {
+		t.Errorf("fresh address = %q", s.CinefinAddress())
+	}
+	if err := s.SetCinefinAddress("192.168.1.20"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.CinefinAddress(); got != "192.168.1.20" {
+		t.Errorf("reloaded address = %q", got)
+	}
+	if err := again.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if got := again.CinefinAddress(); got != "" {
+		t.Errorf("address after Reset = %q", got)
+	}
+}
+
+// The standby spec survives a reopen and is forgotten on unpairing.
+func TestStandbyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	if s.Standby() != nil {
+		t.Fatal("fresh state has a standby spec")
+	}
+	want := Standby{
+		Ident:      StandbyIdent{URL: "http://c/ident?t=x", SHA256: "ab", Options: "end=4"},
+		CinemaName: "The Roxy", PlayerName: "Screen 1", ShowStatus: true,
+	}
+	if err := s.SetStandby(want); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.Standby(); got == nil || *got != want {
+		t.Fatalf("reopened spec = %+v, want %+v", got, want)
+	}
+	if err := s2.Reset(); err != nil || s2.Standby() != nil {
+		t.Errorf("after reset: %+v (err %v)", s2.Standby(), err)
+	}
+}

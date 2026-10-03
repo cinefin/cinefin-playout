@@ -45,11 +45,12 @@ type Backend interface {
 	// delivered verbatim as mpv would emit them. Call once before Run.
 	OnMessage(func([]byte))
 
-	// OnMPVReconnect registers a callback fired when the link to mpv is
-	// re-established after a drop (mpv restart/crash). The relay uses it to
-	// force control clients to reconnect and re-subscribe, since the fresh mpv
-	// has none of their observers. Call once before Run.
-	OnMPVReconnect(func())
+	// OnMPVConnect registers a callback fired each time the link to mpv comes
+	// up, when mpv is ready for commands: first with reconnect false, then true
+	// after every drop (mpv restart/crash). The server uses it to put mpv on
+	// standby, and on a reconnect to force control clients to re-subscribe,
+	// since the fresh mpv has none of their observers. Call once before Run.
+	OnMPVConnect(func(reconnect bool))
 
 	// Run starts the backend's background work (mpv IPC connection maintenance)
 	// and returns immediately; it stops when ctx is cancelled.

@@ -16,8 +16,13 @@ Environment=DISPLAY=:0
 # For DRM mode (hostconfig graphics.mode = "drm"), grant device access:
 # SupplementaryGroups=video render
 # There is no config file: startup options are flags (--listen, --port, --mpv,
-# --state-dir). State (token, launch config) lives in ~/.local/state/cinefin-playout
-# for the User above. --no-ui keeps the service headless.
+# --state-dir, --display, --mode). State (token, launch config) lives in
+# ~/.local/state/cinefin-playout for the User above. --no-ui keeps the service
+# headless. Upgrading from 0.1: drop --config /etc/cinefin-playout/config.toml
+# here; it is no longer read.
+#
+# mpv reads mpv.conf from ~/.local/state/cinefin-playout/mpv, not ~/.config/mpv.
+# For a config kept elsewhere, add --mpv-config /etc/cinefin-playout/mpv.conf.
 ExecStart=/usr/local/bin/cinefin-playout --no-ui
 
 Restart=always

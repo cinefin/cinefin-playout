@@ -20,8 +20,8 @@ type subprocess struct {
 	mgr *mpvproc.Manager
 	log *log.Logger
 
-	onReconnect func()      // fired when the mpv link comes back after a drop
-	sawDown     atomic.Bool // did the mpv link drop since the last "up"?
+	onConnect func(reconnect bool) // fired when the mpv link comes up
+	sawDown   atomic.Bool          // did the mpv link drop since the last "up"?
 }
 
 // New builds the mpv playback backend: mpv driven as a supervised subprocess
@@ -40,10 +40,10 @@ func New(cfg config.Config, hcOf HostConfigProvider, logger *log.Logger) Backend
 	}
 }
 
-func (s *subprocess) Send(frame []byte) error   { return s.mpv.Send(frame) }
-func (s *subprocess) Connected() bool           { return s.mpv.Connected() }
-func (s *subprocess) OnMessage(fn func([]byte)) { s.mpv.OnMessage(fn) }
-func (s *subprocess) OnMPVReconnect(fn func())  { s.onReconnect = fn }
+func (s *subprocess) Send(frame []byte) error              { return s.mpv.Send(frame) }
+func (s *subprocess) Connected() bool                      { return s.mpv.Connected() }
+func (s *subprocess) OnMessage(fn func([]byte))            { s.mpv.OnMessage(fn) }
+func (s *subprocess) OnMPVConnect(fn func(reconnect bool)) { s.onConnect = fn }
 
 // Run wires connection logging, starts the persistent IPC client, the process
 // supervisor and the DRM hotplug watcher, then returns. All stop when ctx ends.
@@ -52,9 +52,10 @@ func (s *subprocess) Run(ctx context.Context) {
 		if up {
 			s.log.Printf("mpv ipc connected: %s", s.cfg.IPCSocket)
 			// Reconnect after a drop = a possibly-restarted mpv with no
-			// observers → make control clients re-establish and re-subscribe.
-			if s.sawDown.Swap(false) && s.onReconnect != nil {
-				s.onReconnect()
+			// observers.
+			reconnect := s.sawDown.Swap(false)
+			if s.onConnect != nil {
+				s.onConnect(reconnect)
 			}
 		} else {
 			s.log.Printf("mpv ipc disconnected: %s", s.cfg.IPCSocket)

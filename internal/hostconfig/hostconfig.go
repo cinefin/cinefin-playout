@@ -10,6 +10,7 @@
 package hostconfig
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strconv"
@@ -39,7 +40,6 @@ type Graphics struct {
 	HDRPassthrough bool   `json:"hdr_passthrough"`       //
 	OSC            bool   `json:"osc"`                   // mpv on-screen controller (seek bar / controls on mouse-over)
 	Display        string `json:"display"`               // X display (desktop); "" for drm
-	IdleMedia      string `json:"idle_media"`            // ident/boot image shown paused before Cinefin connects
 }
 
 // Audio is the host's audio-output configuration.
@@ -84,7 +84,7 @@ func Preset(goos string) HostConfig {
 				Screen:         0,
 				Fullscreen:     true,
 				HDRPassthrough: true,
-				OSC:            true,
+				OSC:            false,
 				Display:        "",
 			},
 			Audio: Audio{
@@ -107,7 +107,7 @@ func Preset(goos string) HostConfig {
 				Screen:         0,
 				Fullscreen:     true,
 				HDRPassthrough: true,
-				OSC:            true,
+				OSC:            false,
 				Display:        ":0",
 			},
 			Audio: Audio{
@@ -135,14 +135,11 @@ func Detect() HostConfig {
 }
 
 // Pairing is the launch config for an unpaired player: Detect with a clean
-// full screen (no on-screen controller, no idle media) that the agent draws the
-// pairing card on.
+// full screen that the agent draws the pairing box on, over the standby ident.
 func Pairing() HostConfig {
 	hc := Detect()
 	hc.Autostart = true
 	hc.Graphics.Fullscreen = true
-	hc.Graphics.OSC = false
-	hc.Graphics.IdleMedia = ""
 	return hc
 }
 
@@ -170,6 +167,59 @@ func (hc *HostConfig) PickScreen(screen string, connected []string) error {
 	default:
 		g.ScreenName = screen
 	}
+	return nil
+}
+
+// ValidateDRMMode checks a --mode value against the forms mpv's --drm-mode
+// takes: "preferred", "highest", a mode index ("3"), "WxH" or "WxH@Hz" (the
+// refresh may be fractional, e.g. "1920x1080@59.94").
+func ValidateDRMMode(mode string) error {
+	switch mode {
+	case "preferred", "highest":
+		return nil
+	}
+	if isDigits(mode) {
+		return nil
+	}
+	res, hz, withHz := strings.Cut(mode, "@")
+	w, h, ok := strings.Cut(res, "x")
+	valid := ok && isDigits(w) && isDigits(h) && w[0] != '0' && h[0] != '0'
+	if valid && withHz {
+		f, err := strconv.ParseFloat(hz, 64)
+		valid = err == nil && f > 0 && isDecimal(hz)
+	}
+	if !valid {
+		return fmt.Errorf("mode %q: want WxH, WxH@Hz, preferred, highest or a mode index, e.g. 3840x2160@59.94", mode)
+	}
+	return nil
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// isDecimal reports whether s is digits with at most one ".", like "59.94".
+func isDecimal(s string) bool {
+	whole, frac, _ := strings.Cut(s, ".")
+	return isDigits(whole) && (frac == "" || isDigits(frac))
+}
+
+// ErrModeIgnored is PickMode's answer when mpv does not draw straight to the
+// screen: on a desktop the session sets the resolution.
+var ErrModeIgnored = errors.New("only applies when mpv draws straight to the screen (DRM); ignored on a desktop")
+
+// PickMode sets the DRM mode given on the command line (--mode), the
+// companion to PickScreen. mode must already pass ValidateDRMMode.
+func (hc *HostConfig) PickMode(mode string) error {
+	if hc.Graphics.Mode != ModeDRM {
+		return ErrModeIgnored
+	}
+	hc.Graphics.DRMMode = mode
 	return nil
 }
 
@@ -208,19 +258,43 @@ func (hc HostConfig) Validate() error {
 	return nil
 }
 
+// MPVConfig is the mpv configuration the player reads, set on the agent's
+// command line rather than by Cinefin.
+type MPVConfig struct {
+	Dir     string // the player's own config folder (--config-dir); "" = mpv's default
+	Include string // an extra config file (--include); "" = none
+}
+
 // BuildMPVArgs turns the host config into an mpv command line (excluding the
 // binary itself — the caller prepends that). The IPC socket, idle and
 // force-window flags are always enforced: they are what Cinefin relies on to
 // control playback, so config can't disable them.
-func BuildMPVArgs(hc HostConfig, ipcSocket string) []string {
+//
+// mpv reads the mpv.conf in its config folder before the command line, and
+// reads an --include file where it stands on the command line, so the mpv
+// config goes first: mpv.conf in mc.Dir, then mc.Include, then every option
+// below, which therefore wins over both.
+func BuildMPVArgs(hc HostConfig, ipcSocket string, mc MPVConfig) []string {
 	g := hc.Graphics
 	a := hc.Audio
 
-	args := []string{
-		"--input-ipc-server=" + ipcSocket,
+	// The player's own config folder instead of the personal ~/.config/mpv of
+	// whichever user runs the agent, and no user scripts, which could fight
+	// Cinefin for control. mpv's built-in osc/console/stats still load.
+	var args []string
+	if mc.Dir != "" {
+		args = append(args, "--config-dir="+mc.Dir)
+	}
+	args = append(args, "--load-scripts=no")
+	if mc.Include != "" {
+		args = append(args, "--include="+mc.Include)
+	}
+
+	args = append(args,
+		"--input-ipc-server="+ipcSocket,
 		"--idle=yes",
 		"--force-window=yes",
-	}
+	)
 
 	if g.Fullscreen {
 		args = append(args, "--fullscreen")
@@ -282,12 +356,6 @@ func BuildMPVArgs(hc HostConfig, ipcSocket string) []string {
 	}
 	if a.MaxVolume > 0 {
 		args = append(args, "--volume-max="+strconv.Itoa(a.MaxVolume))
-	}
-
-	// Idle/ident media, shown paused before Cinefin takes over. Always last so
-	// it is the initial playlist entry.
-	if g.IdleMedia != "" {
-		args = append(args, "--pause", g.IdleMedia)
 	}
 
 	return args

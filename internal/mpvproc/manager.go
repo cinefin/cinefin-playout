@@ -201,7 +201,7 @@ func (m *Manager) childAlive() bool {
 // spawnLocked launches mpv. Caller holds m.mu.
 func (m *Manager) spawnLocked() (bool, string) {
 	hc := m.hcOf()
-	args := hostconfig.BuildMPVArgs(hc, m.ipcPath)
+	args := hostconfig.BuildMPVArgs(hc, m.ipcPath, hostconfig.MPVConfig{Dir: m.cfg.MPVConfigDir(), Include: m.cfg.MPVConfigFile})
 	full := append([]string{m.cfg.ResolveMPVBinary()}, args...)
 
 	logPath := filepath.Join(m.cfg.StateDir, "mpv-stdout.log")

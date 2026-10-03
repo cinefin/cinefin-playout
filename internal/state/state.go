@@ -2,7 +2,7 @@
 // token Cinefin received when it paired, and the mpv launch config Cinefin has
 // set. It lives in one JSON file, <state_dir>/state.json, owned by the agent.
 // Users never edit it: pairing sets the token, Cinefin sets the launch config
-// over PUT /hostconfig, and the agent keeps a copy so the box still boots and
+// over PUT /hostconfig and the standby spec over PUT /standby, and the agent keeps a copy so the box still boots and
 // starts mpv when Cinefin is offline. A player with no token is unpaired.
 package state
 
@@ -26,6 +26,30 @@ type data struct {
 	ID     string                 `json:"id"`
 	Token  string                 `json:"token,omitempty"`
 	Launch *hostconfig.HostConfig `json:"launch,omitempty"`
+	// Cinefin is the address Cinefin last connected from, so the offline
+	// notice can name it after a reboot.
+	Cinefin string `json:"cinefin,omitempty"`
+	// Standby is the standby spec Cinefin last sent (PUT /standby).
+	Standby *Standby `json:"standby,omitempty"`
+}
+
+// Standby is what the player shows when Cinefin is not playing a programme:
+// the cinema's ident, played once and then held by its per-file mpv options.
+// Cinefin builds it; the player keeps it so standby looks the same when
+// Cinefin cannot be reached.
+type Standby struct {
+	Ident      StandbyIdent `json:"ident"`
+	CinemaName string       `json:"cinema_name"`
+	PlayerName string       `json:"player_name"`
+	ShowStatus bool         `json:"show_status"`
+}
+
+// StandbyIdent is the ident to download and how to hold it. URL is a Cinefin
+// stream URL that carries a token, so it is never reported back.
+type StandbyIdent struct {
+	URL     string `json:"url"`
+	SHA256  string `json:"sha256"`
+	Options string `json:"options"`
 }
 
 // Store is the loaded state, safe for concurrent use. Every setter writes the
@@ -77,13 +101,16 @@ func (s *Store) ID() (string, error) {
 // Paired reports whether a Cinefin has paired with this player.
 func (s *Store) Paired() bool { return s.Token() != "" }
 
-// Reset forgets the pairing and the launch config Cinefin set, returning the
-// player to its unpaired state. The ID is kept.
+// Reset forgets the pairing, the launch config Cinefin set, Cinefin's address
+// and the standby spec, returning the player to its unpaired state. The ID is
+// kept.
 func (s *Store) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.d.Token = ""
 	s.d.Launch = nil
+	s.d.Cinefin = ""
+	s.d.Standby = nil
 	return s.saveLocked()
 }
 
@@ -129,6 +156,54 @@ func (s *Store) SetLaunch(hc hostconfig.HostConfig) error {
 	defer s.mu.Unlock()
 	s.d.Launch = &hc
 	return s.saveLocked()
+}
+
+// CinefinAddress is the address Cinefin last connected from ("" when unknown).
+func (s *Store) CinefinAddress() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.d.Cinefin
+}
+
+// SetCinefinAddress stores the address Cinefin connected from. The file is
+// only written when the address changes, so a reconnect costs nothing.
+func (s *Store) SetCinefinAddress(addr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.d.Cinefin == addr {
+		return nil
+	}
+	prev := s.d.Cinefin
+	s.d.Cinefin = addr
+	if err := s.saveLocked(); err != nil {
+		s.d.Cinefin = prev
+		return err
+	}
+	return nil
+}
+
+// Standby is the standby spec Cinefin last sent, or nil when there is none.
+func (s *Store) Standby() *Standby {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.d.Standby == nil {
+		return nil
+	}
+	sb := *s.d.Standby
+	return &sb
+}
+
+// SetStandby stores the standby spec.
+func (s *Store) SetStandby(sb Standby) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := s.d.Standby
+	s.d.Standby = &sb
+	if err := s.saveLocked(); err != nil {
+		s.d.Standby = prev
+		return err
+	}
+	return nil
 }
 
 // saveLocked writes the state atomically (temp file + rename), 0600 because it

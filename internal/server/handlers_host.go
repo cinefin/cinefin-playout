@@ -33,22 +33,6 @@ func (s *Server) handlePutHostConfig(w http.ResponseWriter, r *http.Request) {
 	s.saveLaunch(w, hc)
 }
 
-// handlePutIdleMedia updates only the idle-screen media (graphics.idle_media) —
-// the cinema ident Cinefin owns and streams — leaving every other graphics/
-// audio setting untouched. Returns {restart_required} when mpv is up.
-func (s *Server) handlePutIdleMedia(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		IdleMedia string `json:"idle_media"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-	hc := s.state.Launch()
-	hc.Graphics.IdleMedia = body.IdleMedia
-	s.saveLaunch(w, hc)
-}
-
 // saveLaunch persists hc and replies {restart_required}.
 func (s *Server) saveLaunch(w http.ResponseWriter, hc hostconfig.HostConfig) {
 	if err := s.state.SetLaunch(hc); err != nil {

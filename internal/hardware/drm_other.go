@@ -9,3 +9,6 @@ func drmConnectors(_ string) []string {
 
 // ConnectedDRMConnectors is Linux-only; other platforms have none.
 func ConnectedDRMConnectors() []string { return nil }
+
+// DRMConnectorList is Linux-only; other platforms have none.
+func DRMConnectorList(_ string) []Connector { return nil }

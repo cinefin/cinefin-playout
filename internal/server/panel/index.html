@@ -138,8 +138,8 @@ body { margin: 0; background: var(--bg); color: var(--text);
     <div class="cred" id="pairing" hidden>
       <div class="line"><span class="cap">Pairing code</span></div>
       <div class="code" id="code">…</div>
-      <p class="note">In Cinefin, open Settings › Playout, choose <b id="name-ref"></b>
-        and enter this code. It is also on the player's screen, and changes in <span id="expires"></span>.
+      <p class="note">In Cinefin, go to Settings › Playout and enter this code. It is also on
+        the player's screen, and changes in <span id="expires"></span>.
         If the player is not listed, add it by the address above.</p>
     </div>
     <p class="note" id="paired-note" hidden>Paired with Cinefin.
@@ -178,7 +178,6 @@ body { margin: 0; background: var(--bg); color: var(--text);
       $("paired-note").hidden = !s.paired;
       if (!s.paired) {
         $("code").textContent = s.code || "…";
-        $("name-ref").textContent = s.name || "this player";
         $("expires").textContent = minutes(s.code_expires_in || 0);
       }
 

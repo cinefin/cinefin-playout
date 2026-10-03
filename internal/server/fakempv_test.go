@@ -102,12 +102,15 @@ func (f *fakeMPV) respond(conn net.Conn, line []byte) {
 	// If this was observe_property, follow up with a property-change event.
 	if len(req.Command) > 0 {
 		if name, _ := req.Command[0].(string); name == "observe_property" {
+			var id any
 			propName := ""
 			if len(req.Command) >= 3 {
+				id = req.Command[1]
 				propName, _ = req.Command[2].(string)
 			}
 			writeFrame(conn, map[string]any{
 				"event": "property-change",
+				"id":    id,
 				"name":  propName,
 				"data":  42.0,
 			})

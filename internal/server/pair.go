@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"runtime"
 
@@ -31,6 +32,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	switch err := s.codes.Check(body.Code); {
 	case errors.Is(err, pairing.ErrWrongCode):
 		s.log.Printf("pairing: wrong code from %s", r.RemoteAddr)
+		s.card.wake() // the code rotated: show the new one now
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "wrong code; check the code on the player's screen"})
 		return
 	case err != nil:
@@ -47,6 +49,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Printf("pairing: paired with %s", r.RemoteAddr)
+	s.card.startConfirm(remoteHost(r.RemoteAddr), body.Code)
 	s.pairingChanged(true)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":         tok,
@@ -55,6 +58,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		"agent_version": version.Version,
 		"os":            runtime.GOOS,
 		"arch":          runtime.GOARCH,
+		"protocol":      protocolVersion,
 	})
 }
 
@@ -77,6 +81,8 @@ func (s *Server) Unpair() error {
 	}
 	s.log.Printf("pairing: unpaired")
 	s.control.disconnect()
+	s.card.setTestCard(false)
+	s.tone.reset()
 	s.pairingChanged(false)
 	// Stopping mpv can take seconds; do not hold the request for it.
 	go s.backend.Restart(false)
@@ -84,7 +90,7 @@ func (s *Server) Unpair() error {
 }
 
 func (s *Server) pairingChanged(paired bool) {
-	s.card.refresh()
+	s.card.wake()
 	if s.onPairing != nil {
 		s.onPairing(paired)
 	}
@@ -97,4 +103,13 @@ func newToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// remoteHost is the host part of a request's RemoteAddr ("10.0.0.2:51234" ->
+// "10.0.0.2").
+func remoteHost(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }

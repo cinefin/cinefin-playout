@@ -117,57 +117,6 @@ func TestPutHostConfigRejectsInvalid(t *testing.T) {
 	}
 }
 
-// Only the idle media (the Cinefin-owned cinema ident) is pushed by the narrow
-// idle-media PUT, and it must leave the rest of the config untouched.
-func TestPutIdleMediaPersistsOnly(t *testing.T) {
-	base, st := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
-
-	// Seed a known launch config.
-	seed := hostconfig.Default()
-	seed.Audio.Device = "pipewire"
-	seed.Graphics.Screen = 2
-	if err := st.SetLaunch(seed); err != nil {
-		t.Fatal(err)
-	}
-
-	resp := do(t, "PUT", base+"/hostconfig/idle-media", []byte(`{"idle_media":"http://cinefin/ident.mp4"}`))
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("PUT /hostconfig/idle-media = %d", resp.StatusCode)
-	}
-	var out struct {
-		RestartRequired bool `json:"restart_required"`
-	}
-	json.NewDecoder(resp.Body).Decode(&out)
-	if out.RestartRequired {
-		t.Errorf("restart_required should be false when mpv is not running")
-	}
-
-	loaded := st.Launch()
-	if loaded.Graphics.IdleMedia != "http://cinefin/ident.mp4" {
-		t.Errorf("idle_media not persisted: %q", loaded.Graphics.IdleMedia)
-	}
-	// Graphics/audio settings must be untouched.
-	if loaded.Audio.Device != "pipewire" || loaded.Graphics.Screen != 2 {
-		t.Errorf("idle-media PUT altered graphics/audio: %+v", loaded)
-	}
-}
-
-func TestPutIdleMediaRestartRequiredWhenRunning(t *testing.T) {
-	fake := newFakeMPV(t) // responds to mpv-version → "running"
-	base, _ := newHostTestServer(t, fake.path)
-
-	resp := do(t, "PUT", base+"/hostconfig/idle-media", []byte(`{"idle_media":"x"}`))
-	defer resp.Body.Close()
-	var out struct {
-		RestartRequired bool `json:"restart_required"`
-	}
-	json.NewDecoder(resp.Body).Decode(&out)
-	if !out.RestartRequired {
-		t.Errorf("restart_required should be true when mpv responds on the socket")
-	}
-}
-
 func TestHardwareEndpoint(t *testing.T) {
 	base, _ := newHostTestServer(t, "/tmp/does-not-exist-x.sock")
 	resp := do(t, "GET", base+"/hardware", nil)

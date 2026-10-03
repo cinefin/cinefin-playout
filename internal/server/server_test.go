@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,11 @@ func TestStatusReportsMPVReachable(t *testing.T) {
 			IPCSocket string `json:"ipc_socket"`
 			Reachable bool   `json:"reachable"`
 		} `json:"mpv"`
+		MPVConfig struct {
+			Dir     string `json:"dir"`
+			MPVConf *bool  `json:"mpv_conf"`
+			File    string `json:"file"`
+		} `json:"mpv_config"`
 	}
 	json.NewDecoder(resp.Body).Decode(&body)
 	if !body.MPV.Reachable {
@@ -142,6 +148,9 @@ func TestStatusReportsMPVReachable(t *testing.T) {
 	}
 	if body.MPV.IPCSocket != fake.path {
 		t.Fatalf("ipc_socket = %q, want %q", body.MPV.IPCSocket, fake.path)
+	}
+	if filepath.Base(body.MPVConfig.Dir) != "mpv" || body.MPVConfig.MPVConf == nil || *body.MPVConfig.MPVConf || body.MPVConfig.File != "" {
+		t.Errorf("mpv_config = %+v", body.MPVConfig)
 	}
 }
 

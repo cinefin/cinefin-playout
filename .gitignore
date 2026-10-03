@@ -4,3 +4,5 @@
 /build/
 /dist/
 *.exe
+# A stray local build committed by mistake in 4fa8113
+/cf-p

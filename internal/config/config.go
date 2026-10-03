@@ -17,6 +17,14 @@ type Config struct {
 	MPVBinary string // "" = auto-resolve (see ResolveMPVBinary)
 	StateDir  string // agent state: state.json, mpv log
 	IPCSocket string // mpv's local JSON-IPC endpoint (unix socket or named pipe)
+
+	// MPVConfigFile is an extra mpv config file (--mpv-config), passed to mpv
+	// as --include. "" = none. The player's own config folder is MPVConfigDir.
+	MPVConfigFile string
+	// LegacyConfig is set when the agent was started the 0.1 way: with
+	// --config, or with a config.toml at one of the old default paths. It holds
+	// that path. Those files are no longer read; see LegacyConfigNotice.
+	LegacyConfig string
 }
 
 // Default returns the shipped defaults.
@@ -48,6 +56,46 @@ func (c Config) ResolveMPVBinary() string {
 		}
 	}
 	return "mpv"
+}
+
+// MPVConfigDir is the player's own mpv config folder, <state-dir>/mpv. mpv is
+// pointed at it with --config-dir, so it reads an mpv.conf there and ignores
+// the personal ~/.config/mpv of whichever user runs the agent.
+func (c Config) MPVConfigDir() string {
+	return filepath.Join(c.StateDir, "mpv")
+}
+
+// MPVConfPath is the mpv.conf path inside MPVConfigDir.
+func (c Config) MPVConfPath() string {
+	return filepath.Join(c.MPVConfigDir(), "mpv.conf")
+}
+
+// HasMPVConf reports whether there is an mpv.conf in MPVConfigDir.
+func (c Config) HasMPVConf() bool {
+	fi, err := os.Stat(c.MPVConfPath())
+	return err == nil && !fi.IsDir()
+}
+
+// LegacyConfigNotice is what the agent says when it finds a 0.1 config.toml.
+const LegacyConfigNotice = "config.toml is no longer used; pair this player again in Settings › Playout"
+
+// LegacyConfigPaths are the places 0.1 releases read config.toml from.
+func LegacyConfigPaths() []string {
+	paths := []string{"config.toml"}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "cinefin-playout", "config.toml"))
+	}
+	return append(paths, "/etc/cinefin-playout/config.toml")
+}
+
+// FindLegacyConfig returns the first of paths that is an existing file, or "".
+func FindLegacyConfig(paths []string) string {
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	return ""
 }
 
 // DefaultStateDir is the per-user state directory: %LOCALAPPDATA%\cinefin-playout

@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -11,36 +11,92 @@ import (
 	"github.com/cinefin/cinefin-playout/internal/pairing"
 )
 
-// cardRequestID tags the agent's own mpv commands (the pairing card). Replies
-// carrying it are not forwarded to the control client (see control.fromMPV).
-const cardRequestID = 2_000_000_001
+// The agent's reserved ids on mpv's IPC. agentRequestID tags its own commands
+// (the overlay, standby and the test sound); pathObserverID is its observer of
+// mpv's path (and timeObserverID, in testsound.go, of the test sound's
+// position).
+// Frames carrying them are not forwarded to the control client (see
+// control.fromMPV).
+const (
+	agentRequestID = 2_000_000_001
+	pathObserverID = 2_000_000_003
+)
 
-// card draws the pairing card on the player's screen while it is unpaired: the
-// player's name, the pairing code in large type, and its address for adding it
-// by hand. It uses an mpv OSD overlay over IPC, so it needs no image files and
-// works on a desktop window and on DRM alike.
+// card owns the agent's overlay on the player's screen: the pairing box while
+// unpaired, the test card, the paired confirmation, and over standby either
+// the status line or the offline notice and toast. It is an mpv OSD overlay
+// drawn over IPC, so it needs no image files and works on a desktop window and
+// on DRM alike.
 //
-// A 1 s loop keeps the screen in step with the state: it draws when mpv is
-// reachable and the text changed (a new code, a new address), and removes the
-// card once the player is paired. forget makes the next pass redraw, for a
-// freshly started mpv that has no overlay.
+// What is on screen is a scene, chosen from the player's state on every pass
+// (see choose). A scene renders itself for the time since it started and says
+// how soon it wants redrawing, so the pairing box redraws every few seconds
+// (for its countdown bar) and an animation at frame rate. Only one goroutine
+// (run) draws; state changes kick it to redraw at once. forget makes the next
+// pass redraw, for a freshly started mpv that has no overlay.
 type card struct {
-	s *Server
+	s    *Server
+	kick chan struct{}
 
 	mu    sync.Mutex
-	shown string // text currently on screen, "" when none
+	shown string    // text currently on screen, "" when none
+	key   string    // key of the scene on screen, "" when none
+	since time.Time // when that scene started
+	link  linkWatch // the offline notice's state (card_link.go)
+
+	confirm     *confirmScene // set while the paired confirmation plays
+	codeExpires time.Time     // when the code on the pairing box expires, for the confirmation's first frame
+
+	testUntil  time.Time // when the test card turns itself off; zero while it is off
+	testOutput string    // the output line on the test card
 }
 
+func newCard(s *Server) *card { return &card{s: s, kick: make(chan struct{}, 1)} }
+
+// scene is one thing the overlay can show.
+type scene interface {
+	// key names the scene; a different key restarts the scene clock.
+	key() string
+	// frame renders the scene t after it started: the ASS events, how soon it
+	// wants drawing again (0 = idleRedraw), and whether it has finished (a
+	// finished scene is cleared from the screen).
+	frame(t time.Duration) (text string, next time.Duration, done bool)
+}
+
+const (
+	idleRedraw  = time.Second      // how often the state is checked when a scene sets no time
+	frameRedraw = time.Second / 30 // the fastest an animated scene is redrawn
+)
+
 func (c *card) run(ctx context.Context) {
-	t := time.NewTicker(time.Second)
-	defer t.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
-		c.refresh()
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-timer.C:
+		case <-c.kick:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 		}
+		next := c.refresh()
+		if next <= 0 {
+			next = idleRedraw
+		}
+		timer.Reset(max(next, frameRedraw))
+	}
+}
+
+// wake asks the loop to redraw now.
+func (c *card) wake() {
+	select {
+	case c.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -49,80 +105,116 @@ func (c *card) forget() {
 	c.mu.Lock()
 	c.shown = ""
 	c.mu.Unlock()
+	c.wake()
 }
 
-// refresh brings the screen in line with the current state.
-func (c *card) refresh() {
+// startConfirm plays the paired confirmation; from is Cinefin's address and
+// code the pairing code it entered. It starts from the pairing box as shown,
+// with the countdown of the code just used.
+func (c *card) startConfirm(from, code string) {
+	c.mu.Lock()
+	c.confirm = newConfirmScene(from, code, c.s.pairingAddress(), c.pairingNotice(), time.Until(c.codeExpires))
+	c.mu.Unlock()
+	c.wake()
+}
+
+// choose picks the scene for the player's current state, or nil for none.
+// The first case that holds wins. Caller holds c.mu.
+func (c *card) choose() scene {
+	spec := c.s.state.Standby()
+	test := c.testCardSceneLocked()
+	switch {
+	case !c.s.state.Paired():
+		return c.pairingScene()
+	case test != nil:
+		return test
+	case c.confirm != nil:
+		c.confirm.connected = c.s.control.connected()
+		return c.confirm
+	case !c.s.standby.onStandby(): // Cinefin is showing something: keep off it
+		c.standbyWhenAway()
+		return nil
+	case spec != nil && spec.ShowStatus:
+		return c.statusScene(spec)
+	default:
+		return c.linkScene()
+	}
+}
+
+// pairingScene is the pairing box for the code currently accepted. Caller
+// holds c.mu.
+func (c *card) pairingScene() scene {
+	code, expires := c.s.codes.Current()
+	c.codeExpires = expires
+	loaded, intro := c.s.standby.intro()
+	return pairingScene{code: pairing.Format(code), address: c.s.pairingAddress(), notice: c.pairingNotice(),
+		expires: expires, reveal: loaded.Add(intro)}
+}
+
+// pairingNotice is the pairing box's extra line: on a player upgraded from a
+// 0.1 release with a config.toml, that the file is no longer used.
+func (c *card) pairingNotice() string {
+	if c.s.cfg.LegacyConfig == "" {
+		return ""
+	}
+	return legacyConfigNotice
+}
+
+// refresh brings the screen in line with the current state and returns how
+// soon it wants to run again.
+func (c *card) refresh() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	b := c.s.backend
 	if !b.Connected() {
 		c.shown = ""
-		return
+		return idleRedraw
 	}
-	if c.s.state.Paired() {
-		if c.shown != "" && b.Send(overlayFrame("none", "")) == nil {
-			c.shown = ""
+	now := time.Now()
+	for {
+		sc := c.choose()
+		if sc == nil {
+			c.key = ""
+			c.clearLocked()
+			return idleRedraw
 		}
-		return
-	}
-	code, _ := c.s.codes.Current()
-	text := cardText(c.s.id.Name, pairing.Format(code), c.s.pairingAddress())
-	if text != c.shown && b.Send(overlayFrame("ass-events", text)) == nil {
-		c.shown = text
+		if sc.key() != c.key {
+			c.key, c.since = sc.key(), now
+		}
+		text, next, done := sc.frame(now.Sub(c.since))
+		if done {
+			// Hand over to the next scene in this same pass, so the screen
+			// is not blank for a frame between the two. A scene just
+			// started is never done, so this ends.
+			c.finishedLocked(sc)
+			c.key = ""
+			continue
+		}
+		if text != c.shown && b.Send(overlayFrame("ass-events", text)) == nil {
+			c.shown = text
+		}
+		return next
 	}
 }
 
-// cardText lays the card out as ASS events (one per line) on a 1280x720 canvas
-// that mpv scales to the screen: the Cinefin logo at the top, then the text,
-// centred. Colours are ASS &HBBGGRR&.
-func cardText(name, code, address string) string {
-	var b strings.Builder
-	for _, ev := range cardLogo(559, 128) {
-		b.WriteString(ev + "\n")
+// finishedLocked records that a scene ran to its end. Caller holds c.mu.
+func (c *card) finishedLocked(sc scene) {
+	if _, ok := sc.(*confirmScene); ok {
+		c.confirm = nil
 	}
-	b.WriteString(`{\an5\pos(640,400)\bord0\shad0\1c&HF2F0F0&\fs34}Pair this player with Cinefin\N`)
-	b.WriteString(`{\fs21\1c&HACA6A6&}In Cinefin, open Settings › Playout, choose `)
-	b.WriteString(assText(name))
-	b.WriteString(` and enter this code\N\N`)
-	b.WriteString(`{\fs120\fsp6\1c&HF2F0F0&}` + code + `\N\N`)
-	b.WriteString(`{\fsp0\fs22\1c&HACA6A6&}Not in the list? Add it by address: ` + assText(address) + `\N`)
-	b.WriteString(`{\fs19\1c&H7A7171&}The code changes every few minutes.`)
-	return b.String()
 }
 
-// logoScale sizes the mark: its 36x48 drawing units become 45x60 on the canvas.
-const logoScale = 125
+// clearLocked removes whatever is on screen. Caller holds c.mu.
+func (c *card) clearLocked() {
+	if c.shown != "" && c.s.backend.Send(overlayFrame("none", "")) == nil {
+		c.shown = ""
+	}
+}
 
-// cardLogo draws the Cinefin logo with its top-left corner at (x, y): the mark
-// (a film frame with sprocket holes and three colour exposures, the same
-// geometry as the status page's SVG) as ASS vector drawings, and the wordmark
-// beside it. No image file is needed.
-func cardLogo(x, y int) []string {
-	draw := func(colour, path string) string {
-		return fmt.Sprintf(`{\an7\pos(%d,%d)\bord0\shad0\fscx%d\fscy%d\1c&H%s&\p1}%s{\p0}`,
-			x, y, logoScale, logoScale, colour, path)
-	}
-	// The frame: an outer rectangle with the inner one wound the other way,
-	// which cuts it out, plus the eight sprocket holes.
-	frame := "m 0 0 l 36 0 36 48 0 48 m 3 3 l 3 45 33 45 33 3"
-	for _, hx := range []int{6, 26} {
-		for _, hy := range []int{6, 16, 26, 36} {
-			frame += fmt.Sprintf(" m %d %d l %d %d %d %d %d %d", hx, hy, hx+4, hy, hx+4, hy+6, hx, hy+6)
-		}
-	}
-	square := func(sy int) string {
-		return fmt.Sprintf("m 13 %d l 23 %d 23 %d 13 %d", sy, sy, sy+10, sy+10)
-	}
-	wordX := x + 36*logoScale/100 + 16
-	wordY := y + 48*logoScale/100/2
-	return []string{
-		draw("ACA6A6", frame),
-		draw("4D2FFF", square(6)),  // #FF2F4D
-		draw("8AE825", square(19)), // #25E88A
-		draw("FF7B3A", square(32)), // #3A7BFF
-		fmt.Sprintf(`{\an4\pos(%d,%d)\bord0\shad0\b1\fs44\1c&HF2F0F0&}Cinefin`, wordX, wordY),
-	}
+// minutesLeft rounds a code's remaining life up to whole minutes, for the
+// countdown ("new code in N min"); it never says less than 1.
+func minutesLeft(left time.Duration) int {
+	return max(1, int(math.Ceil(left.Minutes())))
 }
 
 // assText strips the characters ASS treats as markup, so a hostname cannot
@@ -143,7 +235,7 @@ func overlayFrame(format, data string) []byte {
 			"res_x":  1280,
 			"res_y":  720,
 		},
-		"request_id": cardRequestID,
+		"request_id": agentRequestID,
 	})
 	return frame
 }
